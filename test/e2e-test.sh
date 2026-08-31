@@ -15,8 +15,7 @@ SSH_PUB="$(cat "$TEST_DIR/ssh/id_ed25519.pub")"
 # Configure test credentials
 TEST_USER="ciadmin"
 TEST_PASS="testpassword123"
-# Yescrypt hash for "testpassword123"
-TEST_HASH='$y$j9T$t8v0GjQx1Jc1qN1n$hM2mE4X.aQ.xO2b1vF3y1kL5n6p7q8r9s0t1u2v3w4x'
+TEST_HASH="$(openssl passwd -6 "$TEST_PASS")"
 
 cat > "$TEST_DIR/config.env" <<EOF
 HOSTNAME=citest
@@ -104,6 +103,9 @@ for i in $(seq 1 60); do
   fi
   if (( i == 60 )); then
     echo "ERROR: Timed out waiting for appliance SSH" >&2
+    echo "=== SSH Verbose Output ==="
+    ssh "${SSH_OPTS[@]}" -vvv -o ConnectTimeout=5 "${TEST_USER}@127.0.0.1" "appliance-status" || true
+    echo "=== VM Console Logs ==="
     docker logs qemu-test-vm | tail -n 100 || true
     exit 1
   fi
@@ -141,10 +143,16 @@ dd if=/dev/urandom of="$TEST_DIR/webdav-payload.bin" bs=1M count=1 status=none
 ORIG_WEBDAV_SHA="$(sha256sum "$TEST_DIR/webdav-payload.bin" | awk '{print $1}')"
 
 # Test WebDAV PUT over HTTP (PAM Basic Auth)
-ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" \
-  "curl -s -f -u '$TEST_USER:$TEST_PASS' -T - http://127.0.0.1:8080/webdav-test.bin" < "$TEST_DIR/webdav-payload.bin"
+echo "--- Testing WebDAV PUT ---"
+if ! ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" \
+  "curl -s -f -u '$TEST_USER:$TEST_PASS' -T - http://127.0.0.1:8080/webdav-test.bin" < "$TEST_DIR/webdav-payload.bin"; then
+  echo "=== Lighttpd Journal Logs ==="
+  ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" "journalctl -u lighttpd -n 50 --no-pager" || true
+  exit 1
+fi
 
 # Test WebDAV GET
+echo "--- Testing WebDAV GET ---"
 ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" \
   "curl -s -f -u '$TEST_USER:$TEST_PASS' http://127.0.0.1:8080/webdav-test.bin" > "$TEST_DIR/webdav-downloaded.bin"
 
@@ -157,13 +165,27 @@ fi
 echo "==> WebDAV PAM read/write test PASSED (SHA256: $ORIG_WEBDAV_SHA)"
 
 # Test WebDAV DELETE
+echo "--- Testing WebDAV DELETE ---"
 ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" \
   "curl -s -f -u '$TEST_USER:$TEST_PASS' -X DELETE http://127.0.0.1:8080/webdav-test.bin"
 
 echo "==> Testing Transactional Live Upgrade & Reboot (deploy.sh)"
-ADMIN_USER="$TEST_USER" ./deploy.sh rpi4 127.0.0.1:2222 --reboot
+ADMIN_USER="$TEST_USER" SSH_KEY="$TEST_DIR/ssh/id_ed25519" ./deploy.sh rpi4 127.0.0.1:2222 --reboot
 
 # Verify post-reboot health
+echo "==> Waiting for appliance to reboot and verify health..."
+for i in $(seq 1 60); do
+  if ssh "${SSH_OPTS[@]}" -o ConnectTimeout=2 "${TEST_USER}@127.0.0.1" "appliance-status" >/dev/null 2>&1; then
+    echo "==> Post-upgrade reboot validated successfully ($i attempts)"
+    break
+  fi
+  if (( i == 60 )); then
+    echo "ERROR: Timed out waiting for post-reboot appliance SSH" >&2
+    exit 1
+  fi
+  sleep 2
+done
+
 ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" "appliance-status"
 
 echo "=== All E2E Integration Tests PASSED Successfully ==="

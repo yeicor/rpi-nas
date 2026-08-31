@@ -7,11 +7,13 @@ sec=/persist/secrets.env
 dump_failure() {
   local code=$?
   local boot_mnt=""
-  for m in /boot/firmware /boot; do
-    if [[ -d "$m" ]]; then boot_mnt="$m"; break; fi
+  for m in /boot/firmware /persist; do
+    if [[ -d "$m" ]]; then
+      mount -o remount,rw "$m" 2>/dev/null || true
+      if [[ -w "$m" ]]; then boot_mnt="$m"; break; fi
+    fi
   done
   if [[ -n "$boot_mnt" ]]; then
-    mount -o remount,rw "$boot_mnt" 2>/dev/null || true
     {
       echo "=== APPLIANCE BOOTSTRAP FAILURE (exit code $code) ==="
       echo "Timestamp: $(date -u '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null || date)"
@@ -32,9 +34,8 @@ dump_failure() {
       echo "=== Kernel Messages ==="
       dmesg | tail -n 120 2>/dev/null || true
       echo "=== END OF DUMP ==="
-    } > "$boot_mnt/LAST_BOOT_FAILURE.txt"
+    } > "$boot_mnt/LAST_BOOT_FAILURE.txt" 2>/dev/null || true
     sync
-    mount -o remount,ro "$boot_mnt" 2>/dev/null || true
   fi
   exit "$code"
 }
@@ -43,15 +44,14 @@ trap dump_failure ERR
 [[ -s "$cfg" && -s "$sec" ]] || { echo "Missing persistent configuration" >&2; exit 1; }
 chmod 0600 "$cfg" "$sec"
 
-grep -q '^HOSTNAME=' "$cfg"
-grep -q '^WEBDAV_DOMAIN=' "$cfg"
-grep -Eq '^ADMIN_SSH_PUBLIC_KEY="?ssh-' "$cfg"
-grep -q '^TAILSCALE_AUTH_KEY=' "$sec"
-grep -q '^CLOUDFLARE_API_TOKEN=' "$sec"
-grep -q '^ADMIN_PAM_PASSWORD_HASH=' "$sec"
-
-if grep -q 'REPLACE_ME' "$cfg" "$sec"; then
-  echo "bootstrap files still contain REPLACE_ME placeholders" >&2
+if ! grep -q "^HOSTNAME=" "$cfg" || \
+   ! grep -q "^WEBDAV_DOMAIN=" "$cfg" || \
+   ! grep -Eq '^ADMIN_SSH_PUBLIC_KEY="?ssh-' "$cfg" || \
+   ! grep -q "^TAILSCALE_AUTH_KEY=" "$sec" || \
+   ! grep -q "^CLOUDFLARE_API_TOKEN=" "$sec" || \
+   ! grep -q "^ADMIN_PAM_PASSWORD_HASH=" "$sec" || \
+   grep -q "REPLACE_ME" "$cfg" "$sec"; then
+  echo "Persistent configuration incomplete or contains REPLACE_ME" >&2
   exit 1
 fi
 
@@ -72,6 +72,7 @@ if [[ -f /etc/static/group ]]; then
   sed "s|:admin$|:$user|g; s|:admin,|:$user,|g; s|,admin,|, $user,|g; s|,admin$|,$user|g" /etc/static/group > /run/group
   chmod 0644 /run/group
 fi
+rm -f /run/nologin /etc/nologin 2>/dev/null || true
 
 if [[ -n "${ADMIN_SSH_PUBLIC_KEY:-}" ]]; then
   install -d -m 0700 "/persist/ssh/$user"

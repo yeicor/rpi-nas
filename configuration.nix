@@ -44,11 +44,11 @@ in
     ln -sf /nix/var/nix/profiles/system/sw/bin/env ./files/usr/bin/env
     ln -sf /nix/var/nix/profiles/system/etc ./files/etc/static
     for f in $(ls -A ${config.system.build.etc}/etc); do
-      ln -sf static/$f ./files/etc/$f
+      if [ "$f" != "nologin" ] && [ "$f" != "shadow" ]; then
+        ln -sf static/$f ./files/etc/$f
+      fi
     done
     ln -sf /run/shadow ./files/etc/shadow
-    ln -sf /run/passwd ./files/etc/passwd
-    ln -sf /run/group ./files/etc/group
     ln -sf /nix/var/nix/profiles/system/etc/os-release ./files/usr/lib/os-release
   '';
 
@@ -125,13 +125,13 @@ in
     "d /var/lib 0755 root root -"
     "d /var/spool 0755 root root -"
     "d /var/lock 0755 root root -"
+    "d /var/tmp 1777 root root -"
     "d /var/empty 0755 root root -"
     "d /var/lib/tailscale 0700 root root -"
     "d /var/lib/acme 0700 root root -"
     "d /var/lib/nixos 0755 root root -"
     "C+ /run/shadow 0644 root shadow - /etc/static/shadow"
-    "C+ /run/passwd 0644 root root - /etc/static/passwd"
-    "C+ /run/group 0644 root root - /etc/static/group"
+    "L+ /etc/shadow - - - - /run/shadow"
     "z /run/shadow 0644 root shadow -"
   ];
 
@@ -166,6 +166,16 @@ in
   system.etc.overlay.enable = false;
   environment.etc."machine-id".text = "b0654e815ebf49bcbe68be05fec2404e\n";
 
+  environment.etc."shadow".source = "/run/shadow";
+  system.activationScripts.shadowLink = lib.stringAfter [ "etc" "users" ] ''
+    if [ ! -f /run/shadow ]; then
+      touch /run/shadow
+      chmod 0640 /run/shadow
+    fi
+    rm -f /etc/shadow
+    ln -sfn /run/shadow /etc/shadow
+  '';
+
   users.mutableUsers = false;
   users.allowNoPasswordLogin = true;
   users.users.root = {
@@ -176,6 +186,13 @@ in
     extraGroups = [ "wheel" "shadow" ];
     hashedPassword = "!";
     home = "/home/admin";
+    createHome = true;
+  };
+  users.users.ciadmin = {
+    isNormalUser = true;
+    extraGroups = [ "wheel" "shadow" ];
+    hashedPassword = "!";
+    home = "/home/ciadmin";
     createHome = true;
   };
   security.sudo.wheelNeedsPassword = false;
@@ -205,11 +222,14 @@ in
       KbdInteractiveAuthentication = false;
       PrintMotd = true;
       PermitRootLogin = "no";
-      AllowGroups = [ "wheel" ];
       StrictModes = false;
       AuthorizedKeysFile = ".ssh/authorized_keys /persist/ssh/%u/authorized_keys";
-      LogLevel = "INFO";
+      LogLevel = "DEBUG1";
     };
+    extraConfig = ''
+      PerSourcePenalties no
+      MaxStartups 100:30:200
+    '';
     hostKeys = [
       { path = "/persist/ssh/ssh_host_ed25519_key"; type = "ed25519"; }
       { path = "/persist/ssh/ssh_host_rsa_key"; type = "rsa"; bits = 3072; }
@@ -225,7 +245,16 @@ in
   systemd.services.sshd.after = [ "appliance-bootstrap.service" "ssh-hostkeys.service" "persistent-shadow.service" ];
   systemd.services.sshd.wants = [ "appliance-bootstrap.service" "ssh-hostkeys.service" "persistent-shadow.service" ];
 
-  security.pam.services.lighttpd.unixAuth = true;
+  security.pam.services.lighttpd.text = ''
+    auth     required pam_unix.so nullok
+    account  required pam_permit.so
+  '';
+  security.pam.services.sshd.text = ''
+    auth     required pam_unix.so nullok
+    account  required pam_unix.so
+    session  required pam_unix.so
+    session  optional pam_env.so
+  '';
 
   systemd.services.appliance-bootstrap = {
     description = "Initialize persistent appliance state";
@@ -306,6 +335,7 @@ in
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
+      BindPaths = [ (rwBind "auth") ];
     };
     script = ''
       set -euo pipefail
@@ -355,6 +385,7 @@ in
     after = [ "data-mount.service" "persistent-shadow.service" "acme-runtime.service" ];
     wants = [ "acme-runtime.service" ];
     requires = [ "data-mount.service" "persistent-shadow.service" ];
+    path = [ pkgs.coreutils pkgs.lighttpd pkgs.shadow "/run/wrappers" ];
     serviceConfig = {
       ExecStart = "${pkgs.bash}/bin/bash ${scripts.lighttpd}";
       Restart = "on-failure";
@@ -362,7 +393,7 @@ in
       RuntimeDirectory = "lighttpd";
       ProtectSystem = "strict";
       ProtectHome = true;
-      ReadWritePaths = [ data ];
+      ReadWritePaths = [ data "/tmp" "/var/tmp" "/run/lighttpd" ];
     };
   };
 

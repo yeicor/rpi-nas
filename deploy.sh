@@ -17,6 +17,9 @@ command -v nix >/dev/null || { echo "nix is required" >&2; exit 1; }
 command -v ssh >/dev/null || { echo "ssh is required" >&2; exit 1; }
 
 ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
+if [[ -n "${SSH_KEY:-}" ]]; then
+  ssh_opts+=(-i "$SSH_KEY")
+fi
 if [[ "$host_arg" =~ ^(.+):([0-9]+)$ ]]; then
   host="${BASH_REMATCH[1]}"
   ssh_opts+=(-p "${BASH_REMATCH[2]}")
