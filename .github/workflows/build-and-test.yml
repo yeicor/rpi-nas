@@ -1,0 +1,53 @@
+name: Build & Test Appliance
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-and-test:
+    name: Build & E2E Test (Raspberry Pi 4)
+    # Prefer ARM64 runner when available for native compilation speed, or standard ubuntu-latest
+    runs-on: ${{ vars.RUNNER_ARM64 || 'ubuntu-latest' }}
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up QEMU / binfmt (if running on x86_64)
+        if: runner.arch != 'ARM64'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64,arm
+
+      - name: Install Nix
+        uses: determinatesystems/nix-installer-action@v16
+        with:
+          extra-conf: |
+            experimental-features = nix-command flakes
+            accept-flake-config = true
+            max-jobs = auto
+            cores = 0
+
+      - name: Magic Nix Cache
+        uses: determinatesystems/magic-nix-cache-action@v9
+
+      - name: Run Comprehensive End-to-End Test Suite
+        run: |
+          ./test/e2e-test.sh
+
+      - name: Upload Deployable SD Card Image
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi4-sd-image
+          path: result/rpi4.img.zst
+          if-no-files-found: error
+          retention-days: 14
