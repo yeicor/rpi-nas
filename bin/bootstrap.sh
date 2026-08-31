@@ -63,9 +63,14 @@ user="${ADMIN_USERNAME:-admin}"
 install -d -m 0700 /persist/{ssh,"ssh/$user",tailscale,acme,cloudflare,update,auth}
 [[ -d /var/empty ]] || { mkdir -p /var/empty && chmod 0555 /var/empty; }
 
-# Provision Unix user if different from static admin
-if ! id -u "$user" >/dev/null 2>&1; then
-  useradd -m -s /run/current-system/sw/bin/bash -G wheel,shadow -u 1000 "$user" 2>/dev/null || true
+# Dynamically populate /run/passwd and /run/group for $user
+if [[ -f /etc/static/passwd ]]; then
+  sed "s|^admin:|$user:|g; s|/home/admin|/home/$user|g" /etc/static/passwd > /run/passwd
+  chmod 0644 /run/passwd
+fi
+if [[ -f /etc/static/group ]]; then
+  sed "s|:admin$|:$user|g; s|:admin,|:$user,|g; s|,admin,|, $user,|g; s|,admin$|,$user|g" /etc/static/group > /run/group
+  chmod 0644 /run/group
 fi
 
 if [[ -n "${ADMIN_SSH_PUBLIC_KEY:-}" ]]; then
@@ -105,13 +110,11 @@ if [[ -n "${WEBDAV_DOMAIN:-}" && ( ! -s "/persist/acme/$WEBDAV_DOMAIN/fullchain.
   chmod 0644 "/persist/acme/$WEBDAV_DOMAIN/fullchain.pem"
 fi
 
-if [[ -d "/home/$user" ]]; then
-  install -d -m 0700 -o "$user" -g users "/home/$user" "/home/$user/.ssh" 2>/dev/null || true
-  if [[ -s "/persist/ssh/$user/authorized_keys" ]]; then
-    cp -f "/persist/ssh/$user/authorized_keys" "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
-    chmod 0600 "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
-    chown -R "$user:users" "/home/$user" 2>/dev/null || true
-  fi
+install -d -m 0700 "/home/$user" "/home/$user/.ssh"
+if [[ -s "/persist/ssh/$user/authorized_keys" ]]; then
+  cp -f "/persist/ssh/$user/authorized_keys" "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
+  chmod 0600 "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
+  chown -R "$user:users" "/home/$user" 2>/dev/null || true
 fi
 
 trap - ERR

@@ -38,12 +38,35 @@ EOF
 [[ -f config.env ]] && cp -f config.env "$TEST_DIR/config.env.bak"
 [[ -f secrets.env ]] && cp -f secrets.env "$TEST_DIR/secrets.env.bak"
 
+restore_env() {
+  echo "==> Cleaning up test environment"
+  docker rm -f qemu-test-vm 2>/dev/null || true
+  if [[ -f "$TEST_DIR/config.env.bak" ]]; then
+    cp -f "$TEST_DIR/config.env.bak" config.env
+  fi
+  if [[ -f "$TEST_DIR/secrets.env.bak" ]]; then
+    cp -f "$TEST_DIR/secrets.env.bak" secrets.env
+  fi
+  rm -rf "$TEST_DIR"
+}
+trap restore_env EXIT
+
 cp -f "$TEST_DIR/config.env" config.env
 cp -f "$TEST_DIR/secrets.env" secrets.env
 
 echo "==> Building appliance image for rpi4"
-./build.sh rpi4
-nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.rpi4.config.system.build.toplevel' --out-link "$TEST_DIR/toplevel"
+if command -v nix >/dev/null 2>&1 && [ -w /nix/store 2>/dev/null ]; then
+  ./build.sh rpi4
+  nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.rpi4.config.system.build.toplevel' --out-link "$TEST_DIR/toplevel"
+  cp -L "$TEST_DIR/toplevel/kernel" "$TEST_DIR/kernel"
+  cp -L "$TEST_DIR/toplevel/initrd" "$TEST_DIR/initrd"
+  readlink "$TEST_DIR/toplevel" > "$TEST_DIR/toplevel_path"
+else
+  docker run --rm -v rpi-nix-cache:/nix -v "$PWD:/app" -v "$TEST_DIR:$TEST_DIR" -w /app ghcr.io/nixos/nix:latest \
+    bash -c "git config --global --add safe.directory /app && ./build.sh rpi4 && nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.rpi4.config.system.build.toplevel' --out-link '$TEST_DIR/toplevel' && cp -L '$TEST_DIR/toplevel/kernel' '$TEST_DIR/kernel' && cp -L '$TEST_DIR/toplevel/initrd' '$TEST_DIR/initrd' && readlink '$TEST_DIR/toplevel' > '$TEST_DIR/toplevel_path'"
+fi
+
+INIT_PATH="$(cat "$TEST_DIR/toplevel_path")/init"
 
 echo "==> Preparing virtual disks"
 zstd -d -f result/rpi4.img.zst -o "$TEST_DIR/sdcard.img"
@@ -52,7 +75,8 @@ mkfs.ext4 -F -L NAS_DATA "$TEST_DIR/nas.img"
 
 echo "==> Launching virtual appliance in QEMU"
 docker rm -f qemu-test-vm 2>/dev/null || true
-docker run --name qemu-test-vm -d --rm \
+docker run --name qemu-test-vm -d \
+  -v rpi-nix-cache:/nix \
   -v "$PWD:/app:ro" \
   -v "$TEST_DIR:/test" \
   -p 2222:22 -p 8080:8080 \
@@ -61,9 +85,9 @@ docker run --name qemu-test-vm -d --rm \
   qemu-system-aarch64 \
     -M virt,gic-version=3 \
     -cpu cortex-a72 -m 2G -smp 4 \
-    -kernel /test/toplevel/kernel \
-    -initrd /test/toplevel/initrd \
-    -append "init=$(readlink "$TEST_DIR/toplevel")/init console=ttyAMA0 rw loglevel=4" \
+    -kernel /test/kernel \
+    -initrd /test/initrd \
+    -append "init=$INIT_PATH console=ttyAMA0 rw loglevel=4" \
     -drive file=/test/sdcard.img,format=raw,if=none,id=sdcard -device virtio-blk-pci,drive=sdcard \
     -device virtio-scsi-pci,id=scsi0 \
     -drive file=/test/nas.img,format=raw,if=none,id=nas -device scsi-hd,bus=scsi0.0,drive=nas \

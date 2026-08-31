@@ -47,6 +47,8 @@ in
       ln -sf static/$f ./files/etc/$f
     done
     ln -sf /run/shadow ./files/etc/shadow
+    ln -sf /run/passwd ./files/etc/passwd
+    ln -sf /run/group ./files/etc/group
     ln -sf /nix/var/nix/profiles/system/etc/os-release ./files/usr/lib/os-release
   '';
 
@@ -127,9 +129,9 @@ in
     "d /var/lib/tailscale 0700 root root -"
     "d /var/lib/acme 0700 root root -"
     "d /var/lib/nixos 0755 root root -"
-    "d /home/admin 0700 admin users -"
-    "d /home/admin/.ssh 0700 admin users -"
     "C+ /run/shadow 0644 root shadow - /etc/static/shadow"
+    "C+ /run/passwd 0644 root root - /etc/static/passwd"
+    "C+ /run/group 0644 root root - /etc/static/group"
     "z /run/shadow 0644 root shadow -"
   ];
 
@@ -267,8 +269,8 @@ in
   systemd.services.admin-authorized-key = {
     wantedBy = [ "sshd.service" ];
     before = [ "sshd.service" ];
-    after = [ "appliance-bootstrap.service" ];
-    requires = [ "appliance-bootstrap.service" ];
+    after = [ "appliance-bootstrap.service" "persistent-shadow.service" ];
+    requires = [ "appliance-bootstrap.service" "persistent-shadow.service" ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -280,17 +282,18 @@ in
       set -euo pipefail
       . /persist/config.env
       user="''${ADMIN_USERNAME:-admin}"
-      install -d -m 0700 -o "$user" -g users "/persist/ssh/$user" "/home/$user" "/home/$user/.ssh"
+      install -d -m 0700 "/persist/ssh/$user"
+      install -d -m 0700 "/home/$user" "/home/$user/.ssh"
       if ! printf '%s\n' "$ADMIN_SSH_PUBLIC_KEY" | cmp -s - "/persist/ssh/$user/authorized_keys"; then
         umask 077
         printf '%s\n' "$ADMIN_SSH_PUBLIC_KEY" > "/persist/ssh/$user/authorized_keys"
-        chown "$user:users" "/persist/ssh/$user/authorized_keys"
         chmod 0600 "/persist/ssh/$user/authorized_keys"
       fi
       cp -f "/persist/ssh/$user/authorized_keys" "/home/$user/.ssh/authorized_keys"
-      chown -R "$user:users" "/home/$user"
       chmod 0700 "/home/$user" "/home/$user/.ssh"
       chmod 0600 "/home/$user/.ssh/authorized_keys"
+      chown -R "$user:users" "/home/$user" 2>/dev/null || true
+      chown -R "$user:users" "/persist/ssh/$user" 2>/dev/null || true
     '';
   };
 
@@ -299,7 +302,7 @@ in
     after = [ "persist.mount" "appliance-bootstrap.service" ];
     before = [ "sshd.service" "lighttpd.service" ];
     requires = [ "appliance-bootstrap.service" ];
-    path = [ pkgs.util-linux pkgs.gawk pkgs.coreutils ];
+    path = [ pkgs.util-linux pkgs.gawk pkgs.coreutils pkgs.gnused ];
     serviceConfig = {
       Type = "oneshot";
       RemainAfterExit = true;
@@ -309,6 +312,14 @@ in
       . /persist/config.env
       . /persist/secrets.env
       user="''${ADMIN_USERNAME:-admin}"
+      if [ -f /etc/static/passwd ]; then
+        sed "s|^admin:|$user:|g; s|/home/admin|/home/$user|g" /etc/static/passwd > /run/passwd
+        chmod 0644 /run/passwd
+      fi
+      if [ -f /etc/static/group ]; then
+        sed "s|:admin$|:$user|g; s|:admin,|:$user,|g; s|,admin,|, $user,|g; s|,admin$|,$user|g" /etc/static/group > /run/group
+        chmod 0644 /run/group
+      fi
       hash="''${ADMIN_PAM_PASSWORD_HASH#\'}"
       hash="''${hash%\'}"
       hash="''${hash#\"}"

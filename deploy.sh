@@ -31,8 +31,21 @@ if [[ -z "$admin_user" && -f config.env ]]; then
 fi
 admin_user="${admin_user:-admin}"
 
-path="$(nix --extra-experimental-features 'nix-command flakes' build ".#nixosConfigurations.${target}.config.system.build.toplevel" --no-link --print-out-paths)"
-size="$(nix-store -q --size "$path")"
+if command -v nix >/dev/null 2>&1 && [ -w /nix/store 2>/dev/null ]; then
+  path="$(nix --extra-experimental-features 'nix-command flakes' build ".#nixosConfigurations.${target}.config.system.build.toplevel" --no-link --print-out-paths)"
+  size="$(nix-store -q --size "$path")"
+  all_paths="$(nix-store -qR "$path")"
+  export_paths() {
+    nix-store --export "$@"
+  }
+else
+  path="$(docker run --rm -v rpi-nix-cache:/nix -v "$PWD:/app" -w /app ghcr.io/nixos/nix:latest bash -c "git config --global --add safe.directory /app && nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.${target}.config.system.build.toplevel' --no-link --print-out-paths")"
+  size="$(docker run --rm -v rpi-nix-cache:/nix -v "$PWD:/app" -w /app ghcr.io/nixos/nix:latest bash -c "nix-store -q --size '$path'")"
+  all_paths="$(docker run --rm -v rpi-nix-cache:/nix -v "$PWD:/app" -w /app ghcr.io/nixos/nix:latest bash -c "nix-store -qR '$path'")"
+  export_paths() {
+    docker run --rm -i -v rpi-nix-cache:/nix -v "$PWD:/app" -w /app ghcr.io/nixos/nix:latest bash -c "nix-store --export $*"
+  }
+fi
 
 echo "==> target: $target"
 echo "==> closure: $path"
@@ -48,12 +61,11 @@ cleanup_remote() {
 trap cleanup_remote EXIT
 
 echo "==> computing missing closure paths on target"
-all_paths="$(nix-store -qR "$path")"
 missing_paths="$(printf '%s\n' $all_paths | ssh "${ssh_opts[@]}" "${admin_user}@${host}" 'xargs sudo nix-store --check-validity --print-invalid 2>/dev/null' || true)"
 
 if [[ -n "$missing_paths" ]]; then
   echo "==> copying missing paths over SSH"
-  nix-store --export $missing_paths | ssh -C "${ssh_opts[@]}" "${admin_user}@${host}" sudo nix-store --import
+  export_paths $missing_paths | ssh -C "${ssh_opts[@]}" "${admin_user}@${host}" sudo nix-store --import
 else
   echo "==> target already has all required store paths"
 fi
