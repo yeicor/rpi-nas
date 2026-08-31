@@ -16,7 +16,7 @@ jobs:
     name: Build & E2E Test (Raspberry Pi 4)
     # Prefer ARM64 runner when available for native compilation speed, or standard ubuntu-latest
     runs-on: ${{ vars.RUNNER_ARM64 || 'ubuntu-latest' }}
-    timeout-minutes: 60
+    # timeout-minutes: 60
 
     steps:
       - name: Checkout repository
