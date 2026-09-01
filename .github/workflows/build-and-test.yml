@@ -6,17 +6,36 @@ on:
   pull_request:
     branches: [ main ]
   workflow_dispatch:
+    inputs:
+      retry_count:
+        description: 'Auto-retry attempt count (0-indexed)'
+        required: false
+        default: '0'
+      parent_run_id:
+        description: 'Run ID from which to restore Nix cache artifact'
+        required: false
+        default: ''
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
+
+permissions:
+  actions: write
+  contents: write
 
 jobs:
   build-and-test:
     name: Build & E2E Test (Raspberry Pi 4)
     # Prefer ARM64 runner when available for native compilation speed, or standard ubuntu-latest
     runs-on: ${{ vars.RUNNER_ARM64 || 'ubuntu-latest' }}
-    # timeout-minutes: 60
+    timeout-minutes: 360
+
+    env:
+      RETRY_COUNT: ${{ inputs.retry_count || '0' }}
+      PARENT_RUN_ID: ${{ inputs.parent_run_id || '' }}
+      MAX_RETRIES: 4 # 4 retries = 5 total attempts max
+      TIMEOUT_SECONDS: 19800 # 5 hours 30 minutes
 
     steps:
       - name: Checkout repository
@@ -40,11 +59,118 @@ jobs:
       - name: Magic Nix Cache
         uses: determinatesystems/magic-nix-cache-action@v9
 
-      - name: Run Comprehensive End-to-End Test Suite
+      - name: Restore Nix Cache Artifact
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          ./test/e2e-test.sh
+          mkdir -p /tmp/nix-cache
+          DOWNLOAD_DIR="/tmp/downloaded-cache"
+          mkdir -p "$DOWNLOAD_DIR"
+
+          RUN_ID_TO_USE="${PARENT_RUN_ID}"
+          if [ -z "$RUN_ID_TO_USE" ]; then
+            echo "No PARENT_RUN_ID explicitly set. Checking for recent runs with nix-cache artifact..."
+            RECENT_RUN_ID="$(gh run list --workflow build-and-test.yml --branch "${{ github.head_ref || github.ref_name }}" --limit 10 --json databaseId -q '.[].databaseId' 2>/dev/null | head -n 1 || true)"
+            if [ -n "$RECENT_RUN_ID" ] && [ "$RECENT_RUN_ID" != "${{ github.run_id }}" ]; then
+              echo "Found recent run ID: $RECENT_RUN_ID"
+              RUN_ID_TO_USE="$RECENT_RUN_ID"
+            fi
+          fi
+
+          if [ -n "$RUN_ID_TO_USE" ]; then
+            echo "Attempting to download nix-cache artifact from run $RUN_ID_TO_USE..."
+            if gh run download "$RUN_ID_TO_USE" -n nix-cache --dir "$DOWNLOAD_DIR" 2>/dev/null; then
+              echo "Artifact downloaded successfully."
+              if [ -f "$DOWNLOAD_DIR/nix-cache.tar" ]; then
+                echo "Extracting nix-cache.tar..."
+                tar -xf "$DOWNLOAD_DIR/nix-cache.tar" -C /tmp
+              fi
+            else
+              echo "No nix-cache artifact found or download failed from run $RUN_ID_TO_USE. Continuing without restored artifact cache."
+            fi
+          fi
+
+          if [ -d /tmp/nix-cache ] && [ "$(ls -A /tmp/nix-cache 2>/dev/null)" ]; then
+            echo "Importing store paths from Nix binary cache into local store..."
+            nix copy --all --no-check-sigs --from "file:///tmp/nix-cache" || echo "Warning: Some paths could not be copied"
+            echo "Nix cache import step completed."
+          else
+            echo "No local binary cache found to import."
+          fi
+
+      - name: Run Comprehensive End-to-End Test Suite with 5h30m Timeout
+        id: run-test
+        run: |
+          CURRENT_ATTEMPT=$(( RETRY_COUNT + 1 ))
+          TOTAL_ATTEMPTS=$(( MAX_RETRIES + 1 ))
+          echo "Starting E2E test suite with timeout of ${TIMEOUT_SECONDS}s (5h30m)..."
+          echo "Current attempt: $CURRENT_ATTEMPT of $TOTAL_ATTEMPTS (retry count: ${RETRY_COUNT}/${MAX_RETRIES})"
+
+          set +e
+          # Run test with 5h30m (19800s) timeout
+          timeout --kill-after=60s "${TIMEOUT_SECONDS}" ./test/e2e-test.sh
+          EXIT_CODE=$?
+          set -e
+
+          echo "E2E test finished with exit code: $EXIT_CODE"
+
+          if [ "$EXIT_CODE" -eq 124 ]; then
+            echo "==> Process hit the 5h30m timeout threshold."
+            echo "timed_out=true" >> "$GITHUB_OUTPUT"
+          elif [ "$EXIT_CODE" -eq 0 ]; then
+            echo "==> Process completed successfully within time limit."
+            echo "timed_out=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "==> Process failed with error code $EXIT_CODE (not a timeout)."
+            exit "$EXIT_CODE"
+          fi
+
+      - name: Export Nix Cache
+        if: steps.run-test.outputs.timed_out == 'true'
+        run: |
+          echo "Exporting Nix store to binary cache at /tmp/nix-cache..."
+          rm -rf /tmp/nix-cache /tmp/nix-cache.tar
+          mkdir -p /tmp/nix-cache
+          nix copy --all --to "file:///tmp/nix-cache" || echo "Warning: nix copy completed with warnings"
+          echo "Archiving binary cache..."
+          tar -cf /tmp/nix-cache.tar -C /tmp nix-cache
+          echo "Cache archive created at /tmp/nix-cache.tar ($(du -h /tmp/nix-cache.tar | cut -f1))"
+
+      - name: Upload Nix Cache Artifact
+        if: steps.run-test.outputs.timed_out == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: nix-cache
+          path: /tmp/nix-cache.tar
+          retention-days: 3
+          overwrite: true
+
+      - name: Auto-Retry Next Attempt
+        if: steps.run-test.outputs.timed_out == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          NEXT_RETRY=$(( RETRY_COUNT + 1 ))
+          TOTAL_ATTEMPTS=$(( MAX_RETRIES + 1 ))
+          echo "Evaluated retry count: $RETRY_COUNT -> $NEXT_RETRY (Max retries: $MAX_RETRIES, total attempts allowed: $TOTAL_ATTEMPTS)"
+
+          if [ "$NEXT_RETRY" -gt "$MAX_RETRIES" ]; then
+            echo "::error::Maximum auto-retry limit reached ($MAX_RETRIES retries, $TOTAL_ATTEMPTS total attempts). Halting CI."
+            exit 1
+          fi
+
+          TARGET_REF="${{ github.head_ref || github.ref_name }}"
+          echo "Triggering auto-retry attempt #$NEXT_RETRY (Attempt $(( NEXT_RETRY + 1 ))/$TOTAL_ATTEMPTS) for ref '$TARGET_REF' from parent run ${{ github.run_id }}..."
+
+          gh workflow run build-and-test.yml \
+            --ref "$TARGET_REF" \
+            -f retry_count="$NEXT_RETRY" \
+            -f parent_run_id="${{ github.run_id }}"
+
+          echo "Auto-retry dispatched successfully."
 
       - name: Upload Deployable SD Card Image
+        if: steps.run-test.outputs.timed_out != 'true'
         uses: actions/upload-artifact@v4
         with:
           name: rpi4-sd-image
