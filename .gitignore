@@ -2,3 +2,4 @@ config.env
 secrets.env
 result/
 .direnv/
+.cache/

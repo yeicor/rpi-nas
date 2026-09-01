@@ -63,9 +63,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p /tmp/nix-cache
           DOWNLOAD_DIR="/tmp/downloaded-cache"
-          mkdir -p "$DOWNLOAD_DIR"
+          mkdir -p "$DOWNLOAD_DIR" .cache
 
           RUN_ID_TO_USE="${PARENT_RUN_ID}"
           if [ -z "$RUN_ID_TO_USE" ]; then
@@ -82,20 +81,12 @@ jobs:
             if gh run download "$RUN_ID_TO_USE" -n nix-cache --dir "$DOWNLOAD_DIR" 2>/dev/null; then
               echo "Artifact downloaded successfully."
               if [ -f "$DOWNLOAD_DIR/nix-cache.tar" ]; then
-                echo "Extracting nix-cache.tar..."
-                tar -xf "$DOWNLOAD_DIR/nix-cache.tar" -C /tmp
+                echo "Extracting nix-cache.tar into workspace..."
+                tar -xf "$DOWNLOAD_DIR/nix-cache.tar" -C "$GITHUB_WORKSPACE"
               fi
             else
               echo "No nix-cache artifact found or download failed from run $RUN_ID_TO_USE. Continuing without restored artifact cache."
             fi
-          fi
-
-          if [ -d /tmp/nix-cache ] && [ "$(ls -A /tmp/nix-cache 2>/dev/null)" ]; then
-            echo "Importing store paths from Nix binary cache into local store..."
-            nix copy --all --no-check-sigs --from "file:///tmp/nix-cache" || echo "Warning: Some paths could not be copied"
-            echo "Nix cache import step completed."
-          else
-            echo "No local binary cache found to import."
           fi
 
       - name: Run Comprehensive End-to-End Test Suite with 5h30m Timeout
@@ -121,23 +112,25 @@ jobs:
             echo "==> Process completed successfully within time limit."
             echo "timed_out=false" >> "$GITHUB_OUTPUT"
           else
-            echo "==> Process failed with error code $EXIT_CODE (not a timeout)."
+            echo "==> Process failed with error code $EXIT_CODE."
+            echo "timed_out=false" >> "$GITHUB_OUTPUT"
             exit "$EXIT_CODE"
           fi
 
       - name: Export Nix Cache
-        if: steps.run-test.outputs.timed_out == 'true'
+        if: always()
         run: |
-          echo "Exporting Nix store to binary cache at /tmp/nix-cache..."
-          rm -rf /tmp/nix-cache /tmp/nix-cache.tar
-          mkdir -p /tmp/nix-cache
-          nix copy --all --to "file:///tmp/nix-cache" || echo "Warning: nix copy completed with warnings"
-          echo "Archiving binary cache..."
-          tar -cf /tmp/nix-cache.tar -C /tmp nix-cache
-          echo "Cache archive created at /tmp/nix-cache.tar ($(du -h /tmp/nix-cache.tar | cut -f1))"
+          echo "Archiving persistent .cache directory..."
+          rm -f /tmp/nix-cache.tar
+          if [ -d "$GITHUB_WORKSPACE/.cache" ] && [ "$(ls -A "$GITHUB_WORKSPACE/.cache" 2>/dev/null)" ]; then
+            tar -cf /tmp/nix-cache.tar -C "$GITHUB_WORKSPACE" .cache
+            echo "Cache archive created at /tmp/nix-cache.tar ($(du -h /tmp/nix-cache.tar | cut -f1))"
+          else
+            echo "No .cache directory to archive."
+          fi
 
       - name: Upload Nix Cache Artifact
-        if: steps.run-test.outputs.timed_out == 'true'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: nix-cache
@@ -145,8 +138,8 @@ jobs:
           retention-days: 3
           overwrite: true
 
-      - name: Auto-Retry Next Attempt
-        if: steps.run-test.outputs.timed_out == 'true'
+      - name: Auto-Retry Next Attempt on Failure or Timeout
+        if: always() && steps.run-test.outcome != 'success'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -170,7 +163,7 @@ jobs:
           echo "Auto-retry dispatched successfully."
 
       - name: Upload Deployable SD Card Image
-        if: steps.run-test.outputs.timed_out != 'true'
+        if: steps.run-test.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: rpi4-sd-image

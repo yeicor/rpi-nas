@@ -12,7 +12,7 @@ mkdir -p "$TEST_DIR/ssh"
 ssh-keygen -t ed25519 -N "" -f "$TEST_DIR/ssh/id_ed25519" -C "ci-test@local"
 SSH_PUB="$(cat "$TEST_DIR/ssh/id_ed25519.pub")"
 
-# Configure test credentials
+# Configure isolated test credentials
 TEST_USER="ciadmin"
 TEST_PASS="testpassword123"
 TEST_HASH="$(openssl passwd -6 "$TEST_PASS")"
@@ -25,45 +25,43 @@ WEBDAV_DOMAIN=citest.local
 ACME_EMAIL=ci@citest.local
 ADMIN_SSH_PUBLIC_KEY="$SSH_PUB"
 TAILSCALE_FUNNEL=false
+WIFI_SSID_1="CiPrimaryWifi"
+WIFI_SSID_2="CiSecondaryWifi"
+WIFI_COUNTRY="US"
 EOF
 
 cat > "$TEST_DIR/secrets.env" <<EOF
 TAILSCALE_AUTH_KEY=tskey-auth-dummy-ci-key
 CLOUDFLARE_API_TOKEN=cfut_dummy_ci_token
 ADMIN_PAM_PASSWORD_HASH='$TEST_HASH'
+WIFI_PASSWORD_1="CiPrimaryWifiPassword"
+WIFI_PASSWORD_2="CiSecondaryWifiPassword"
 EOF
 
-# Backup existing config/secrets if any
-[[ -f config.env ]] && cp -f config.env "$TEST_DIR/config.env.bak"
-[[ -f secrets.env ]] && cp -f secrets.env "$TEST_DIR/secrets.env.bak"
+echo "==> Building appliance image for rpi4 in Docker"
+CONFIG_ENV="$TEST_DIR/config.env" SECRETS_ENV="$TEST_DIR/secrets.env" ./build.sh rpi4
 
-restore_env() {
-  echo "==> Cleaning up test environment"
-  docker rm -f qemu-test-vm 2>/dev/null || true
-  if [[ -f "$TEST_DIR/config.env.bak" ]]; then
-    cp -f "$TEST_DIR/config.env.bak" config.env
-  fi
-  if [[ -f "$TEST_DIR/secrets.env.bak" ]]; then
-    cp -f "$TEST_DIR/secrets.env.bak" secrets.env
-  fi
-  rm -rf "$TEST_DIR"
-}
-trap restore_env EXIT
-
-cp -f "$TEST_DIR/config.env" config.env
-cp -f "$TEST_DIR/secrets.env" secrets.env
-
-echo "==> Building appliance image for rpi4"
-if command -v nix >/dev/null 2>&1 && [ -w /nix/store 2>/dev/null ]; then
-  ./build.sh rpi4
-  nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.rpi4.config.system.build.toplevel' --out-link "$TEST_DIR/toplevel"
-  cp -L "$TEST_DIR/toplevel/kernel" "$TEST_DIR/kernel"
-  cp -L "$TEST_DIR/toplevel/initrd" "$TEST_DIR/initrd"
-  readlink "$TEST_DIR/toplevel" > "$TEST_DIR/toplevel_path"
-else
-  docker run --rm -v rpi-nix-cache:/nix -v "$PWD:/app" -v "$TEST_DIR:$TEST_DIR" -w /app ghcr.io/nixos/nix:latest \
-    bash -c "git config --global --add safe.directory /app && ./build.sh rpi4 && nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.rpi4.config.system.build.toplevel' --out-link '$TEST_DIR/toplevel' && cp -L '$TEST_DIR/toplevel/kernel' '$TEST_DIR/kernel' && cp -L '$TEST_DIR/toplevel/initrd' '$TEST_DIR/initrd' && readlink '$TEST_DIR/toplevel' > '$TEST_DIR/toplevel_path'"
-fi
+# Extract kernel and initrd from built system for QEMU execution
+docker run --rm \
+  -v "$PWD:/app" \
+  -v "$PWD/.cache/nix:/nix" \
+  -v "$TEST_DIR:$TEST_DIR" \
+  -w /app \
+  ghcr.io/nixos/nix:latest bash -c "
+    set -euo pipefail
+    mkdir -p /etc
+    cat << 'EOF_GIT' > /etc/gitconfig
+[safe]
+	directory = *
+EOF_GIT
+    git config --system --add safe.directory '*' 2>/dev/null || true
+    git config --global --add safe.directory '*' 2>/dev/null || true
+    path=\$(nix --extra-experimental-features 'nix-command flakes' build '.#nixosConfigurations.rpi4.config.system.build.toplevel' --no-link --print-out-paths)
+    cp -L \"\$path/kernel\" '$TEST_DIR/kernel'
+    cp -L \"\$path/initrd\" '$TEST_DIR/initrd'
+    echo \"\$path\" > '$TEST_DIR/toplevel_path'
+    chown -R $(id -u):$(id -g) '$TEST_DIR'
+  "
 
 INIT_PATH="$(cat "$TEST_DIR/toplevel_path")/init"
 
@@ -75,7 +73,7 @@ mkfs.ext4 -F -L NAS_DATA "$TEST_DIR/nas.img"
 echo "==> Launching virtual appliance in QEMU"
 docker rm -f qemu-test-vm 2>/dev/null || true
 docker run --name qemu-test-vm -d \
-  -v rpi-nix-cache:/nix \
+  -v "$PWD/.cache/nix:/nix" \
   -v "$PWD:/app:ro" \
   -v "$TEST_DIR:/test" \
   -p 2222:22 -p 8080:8080 \
@@ -170,7 +168,7 @@ ssh "${SSH_OPTS[@]}" "${TEST_USER}@127.0.0.1" \
   "curl -s -f -u '$TEST_USER:$TEST_PASS' -X DELETE http://127.0.0.1:8080/webdav-test.bin"
 
 echo "==> Testing Transactional Live Upgrade & Reboot (deploy.sh)"
-ADMIN_USER="$TEST_USER" SSH_KEY="$TEST_DIR/ssh/id_ed25519" ./deploy.sh rpi4 127.0.0.1:2222 --reboot
+CONFIG_ENV="$TEST_DIR/config.env" ADMIN_USER="$TEST_USER" SSH_KEY="$TEST_DIR/ssh/id_ed25519" ./deploy.sh rpi4 127.0.0.1:2222 --reboot
 
 # Verify post-reboot health
 echo "==> Waiting for appliance to reboot and verify health..."

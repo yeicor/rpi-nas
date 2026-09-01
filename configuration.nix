@@ -15,6 +15,7 @@ let
     rollback = ./bin/rollback-if-unhealthy.sh;
     motd = ./bin/motd.sh;
     expand-persist = ./bin/expand-persist.sh;
+    wifi = ./bin/wifi.sh;
   };
   lighttpdPkg = pkgs.lighttpd.override { enablePam = true; };
   readme = builtins.readFile ./README.md;
@@ -26,10 +27,21 @@ in
   networking.hostName = "rpi-webdav";
   networking.useDHCP = false;
   networking.useNetworkd = true;
+  hardware.enableRedistributableFirmware = true;
+  hardware.wirelessRegulatoryDatabase = true;
   systemd.network.enable = true;
   systemd.network.networks."99-ethernet" = {
     matchConfig.Type = "ether";
     networkConfig.DHCP = "yes";
+    dhcpV4Config.RouteMetric = 1024;
+  };
+  systemd.network.networks."99-wireless" = {
+    matchConfig.Type = "wlan";
+    networkConfig = {
+      DHCP = "yes";
+      IgnoreCarrierLoss = "3s";
+    };
+    dhcpV4Config.RouteMetric = 2048;
   };
 
   sdImage.compressImage = false;
@@ -440,9 +452,26 @@ in
     BindPaths = [ (rwBind "tailscale") ];
     ProtectSystem = "strict";
   };
+  systemd.services.appliance-wifi = {
+    description = "Connect to configured Wi-Fi network";
+    wantedBy = [ "multi-user.target" ];
+    before = [ "network-online.target" "tailscaled.service" ];
+    after = [ "appliance-bootstrap.service" "systemd-networkd.service" ];
+    wants = [ "systemd-networkd.service" ];
+    requires = [ "appliance-bootstrap.service" ];
+    path = [ pkgs.wpa_supplicant pkgs.iw pkgs.util-linux pkgs.iproute2 pkgs.coreutils pkgs.gnugrep ];
+    serviceConfig = {
+      Type = "simple";
+      Restart = "on-failure";
+      RestartSec = 5;
+      RuntimeDirectory = "wpa_supplicant";
+      RuntimeDirectoryMode = "0700";
+    };
+    script = "${pkgs.bash}/bin/bash ${scripts.wifi}";
+  };
   systemd.services.tailscale-init = {
     wantedBy = [ "multi-user.target" ];
-    after = [ "appliance-bootstrap.service" "tailscaled.service" "network-online.target" ];
+    after = [ "appliance-bootstrap.service" "appliance-wifi.service" "tailscaled.service" "network-online.target" ];
     wants = [ "network-online.target" ];
     requires = [ "tailscaled.service" ];
     serviceConfig = { Type = "oneshot"; RemainAfterExit = true; BindPaths = [ (rwBind "tailscale") ]; ProtectSystem = "strict"; };
@@ -529,7 +558,7 @@ in
           ${pkgs.systemd}/bin/systemctl --failed --no-pager 2>/dev/null || true
           echo ""
           echo "=== Core Service Logs ==="
-          ${pkgs.systemd}/bin/journalctl -u appliance-bootstrap -u data-mount -u lighttpd -u sshd -u tailscaled --no-pager -n 100 2>/dev/null || true
+          ${pkgs.systemd}/bin/journalctl -u appliance-bootstrap -u appliance-wifi -u data-mount -u lighttpd -u sshd -u tailscaled --no-pager -n 100 2>/dev/null || true
           echo ""
           echo "=== Kernel Messages ==="
           ${pkgs.util-linux}/bin/dmesg | tail -n 150 2>/dev/null || true
@@ -546,6 +575,7 @@ in
 
   environment.systemPackages = with pkgs; [
     lighttpdPkg tailscale lego curl jq util-linux gawk f2fs-tools exfatprogs ntfs3g btrfs-progs xfsprogs e2fsprogs dosfstools iproute2
+    wpa_supplicant iw wireless-regdb
     (pkgs.writeShellScriptBin "appliance-install-generation" (builtins.readFile ./bin/appliance-install-generation.sh))
     (pkgs.writeShellScriptBin "appliance-prepare-update" (builtins.readFile ./bin/appliance-prepare-update.sh))
     (pkgs.writeShellScriptBin "appliance-finish-update" (builtins.readFile ./bin/appliance-finish-update.sh))
@@ -556,6 +586,8 @@ in
       echo "root:       $(findmnt -rn -no SOURCE,FSTYPE,OPTIONS /)"
       echo "nix:        $(findmnt -rn -no SOURCE,FSTYPE,OPTIONS /nix)"
       echo "persist:    $(findmnt -rn -no SOURCE,FSTYPE,OPTIONS /persist)"
+      echo "network:    $(${pkgs.iproute2}/bin/ip -br addr show 2>/dev/null | tr '\n' ' | ' || true)"
+      echo "wifi:       $(${pkgs.iw}/bin/iw dev wlan0 link 2>/dev/null | grep -E 'SSID|freq' || echo not-connected)"
       echo "tailscale:  $(${pkgs.tailscale}/bin/tailscale status --self 2>/dev/null || true)"
       echo "data:       $(${pkgs.util-linux}/bin/findmnt -rn --target ${data} 2>/dev/null || echo not-mounted)"
       echo "webdav:     $(systemctl is-active lighttpd 2>/dev/null || true)"
