@@ -26,7 +26,7 @@ if [[ "$status" == "testing" ]]; then
     systemctl --failed --no-pager 2>&1 || true
     echo ""
     echo "--- CRITICAL APPLIANCE SERVICES STATUS ---"
-    systemctl status tailscaled lighttpd hd-idle appliance-wifi appliance-health --no-pager 2>&1 || true
+    systemctl status tailscaled lighttpd hd-idle appliance-health --no-pager 2>&1 || true
     echo ""
     echo "--- NETWORK & REGULATORY STATUS ---"
     ip -br addr 2>&1 || true

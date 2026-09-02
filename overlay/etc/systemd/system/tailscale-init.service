@@ -1,7 +1,7 @@
 [Unit]
 Description=Initialize Tailscale Connection
-After=appliance-bootstrap.service appliance-wifi.service tailscaled.service network-online.target
-Wants=network-online.target
+After=appliance-bootstrap.service tailscaled.service network-online.target time-sync.target
+Wants=network-online.target time-sync.target
 Requires=tailscaled.service
 
 [Service]

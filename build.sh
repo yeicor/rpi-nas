@@ -268,7 +268,7 @@ echo "overlay" >> /etc/initramfs-tools/modules
 apt-get update
 apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" overlayroot cloud-init initramfs-tools btrfs-progs lighttpd lighttpd-mod-webdav lighttpd-mod-openssl rfkill iw wireless-regdb hdparm hd-idle sdparm curl iptables wpasupplicant iproute2 apache2-utils jq openssh-server
 
-echo 'overlayroot="tmpfs:swap=0"' > /etc/overlayroot.conf
+echo 'overlayroot="tmpfs:swap=0,recurse=0"' > /etc/overlayroot.conf
 
 echo "==> Pre-generating SSH host keys..."
 ssh-keygen -A 2>/dev/null || true
@@ -284,8 +284,8 @@ tar -xzf lego.tar.gz lego
 mv lego /usr/local/bin/lego
 rm lego.tar.gz
 
-systemctl enable ssh.service 2>/dev/null || true
-systemctl enable appliance-bootstrap.service data-mount.service appliance-wifi.service
+systemctl enable ssh.service systemd-time-wait-sync.service 2>/dev/null || true
+systemctl enable appliance-bootstrap.service data-mount.service
 systemctl enable hd-idle.service 2>/dev/null || true
 systemctl enable acme-runtime.timer cloudflare-ddns.timer
 systemctl enable tailscale-init.service tailscale-funnel.service
@@ -294,7 +294,7 @@ systemctl enable appliance-health.service appliance-rollback.service
 
 # Disable and mask conflicting/unneeded services for headless appliance
 systemctl disable resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-networkd-wait-online 2>/dev/null || true
-systemctl mask resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-remount-fs.service systemd-growfs-root.service sshswitch.service systemd-networkd-wait-online.service systemd-rfkill.service systemd-rfkill.socket 2>/dev/null || true
+systemctl mask resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-remount-fs.service systemd-growfs-root.service sshswitch.service systemd-networkd-wait-online.service systemd-rfkill.service systemd-rfkill.socket regenerate_ssh_host_keys.service sshd-keygen.service 2>/dev/null || true
 
 echo "==> Stripping unneeded packages and bloat (headless NAS optimization)..."
 apt-get purge -y --auto-remove \

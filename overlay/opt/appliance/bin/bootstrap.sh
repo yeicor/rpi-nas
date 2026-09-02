@@ -36,16 +36,26 @@ echo "${user}:${hash}" > /persist/auth/htpasswd
 chmod 0600 /persist/auth/htpasswd
 chown www-data:www-data /persist/auth/htpasswd 2>/dev/null || true
 
-# Set up SSH authorized keys with correct user ownership
-mkdir -p "/persist/home/$user/.ssh"
+# Set up SSH authorized keys
+mkdir -p "/persist/home/$user/.ssh" "/home/$user/.ssh"
 echo "$ADMIN_SSH_PUBLIC_KEY" > "/persist/home/$user/.ssh/authorized_keys"
-chown -R "$user:$user" "/persist/home/$user" 2>/dev/null || true
-chmod 0700 "/persist/home/$user/.ssh" 2>/dev/null || true
-chmod 0600 "/persist/home/$user/.ssh/authorized_keys" 2>/dev/null || true
+cp "/persist/home/$user/.ssh/authorized_keys" "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
+chown -R "$user:$user" "/persist/home/$user" "/home/$user/.ssh" 2>/dev/null || true
+chmod 0700 "/persist/home/$user/.ssh" "/home/$user/.ssh" 2>/dev/null || true
+chmod 0600 "/persist/home/$user/.ssh/authorized_keys" "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
 
-# Also ensure /home/$user/.ssh exists and has correct ownership
-mkdir -p "/home/$user/.ssh" 2>/dev/null || true
-echo "$ADMIN_SSH_PUBLIC_KEY" > "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
-chown -R "$user:$user" "/home/$user" 2>/dev/null || true
-chmod 0700 "/home/$user/.ssh" 2>/dev/null || true
-chmod 0600 "/home/$user/.ssh/authorized_keys" 2>/dev/null || true
+# Restore or initialize persistent SSH host keys (prevents host key regeneration warnings)
+has_keys=false
+for k in /persist/ssh/ssh_host_*_key; do
+  [[ -s "$k" ]] && { has_keys=true; break; }
+done
+
+if $has_keys; then
+  cp -a /persist/ssh/ssh_host_* /etc/ssh/ 2>/dev/null || true
+else
+  ssh-keygen -A 2>/dev/null || true
+  cp -a /etc/ssh/ssh_host_* /persist/ssh/ 2>/dev/null || true
+  sync
+fi
+chmod 0600 /etc/ssh/ssh_host_*_key /persist/ssh/ssh_host_*_key 2>/dev/null || true
+chmod 0644 /etc/ssh/ssh_host_*_key.pub /persist/ssh/ssh_host_*_key.pub 2>/dev/null || true

@@ -107,14 +107,15 @@ docker run --rm --privileged --net=host \
 
     echo \"==> Staged upgrade reboot triggered!\"
     echo \"==> Waiting for device to reboot and reconnect (polling up to 120s)...\"
+    sleep 12
 
     start_time=\$(date +%s)
     last_reported_status=\"\"
     while true; do
       current_time=\$(date +%s)
       elapsed=\$(( current_time - start_time ))
-      if [[ \$elapsed -gt 120 ]]; then
-        echo \"==> [ERROR] Timed out waiting for device to reconnect after 120s!\"
+      if [[ \$elapsed -gt 180 ]]; then
+        echo \"==> [ERROR] Timed out waiting for device to reconnect after 180s!\"
         exit 1
       fi
 
