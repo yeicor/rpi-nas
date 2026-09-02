@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+
 cfg=/persist/config.env
 sec=/persist/secrets.env
 
@@ -37,9 +38,16 @@ if [[ ${#networks[@]} -eq 0 ]]; then
   exit 0
 fi
 
-# Set regulatory country domain and unblock RFKILL
+# Ensure regulatory domain is set in kernel & firmware even on read-only root
+mount -o remount,rw /boot/firmware 2>/dev/null || true
 if command -v raspi-config >/dev/null 2>&1 && [[ -n "$country" ]]; then
   raspi-config nonint do_wifi_country "$country" 2>/dev/null || true
+fi
+mount -o remount,ro /boot/firmware 2>/dev/null || true
+
+# Direct kernel regulatory and rfkill unblock
+if command -v iw >/dev/null 2>&1 && [[ -n "$country" ]]; then
+  iw reg set "$country" 2>/dev/null || true
 fi
 
 if command -v rfkill >/dev/null 2>&1; then
@@ -47,9 +55,19 @@ if command -v rfkill >/dev/null 2>&1; then
   rfkill unblock all 2>/dev/null || true
 fi
 
-if command -v iw >/dev/null 2>&1 && [[ -n "$country" ]]; then
-  iw reg set "$country" 2>/dev/null || true
-fi
+# Force NetworkManager wireless to be enabled
+mkdir -p /var/lib/NetworkManager
+cat > /var/lib/NetworkManager/NetworkManager.state << 'EOF'
+[main]
+NetworkingEnabled=true
+WirelessEnabled=true
+WWANEnabled=true
+EOF
+
+# Ensure all wireless network interfaces are up
+for iface in $(ls /sys/class/net 2>/dev/null | grep -E '^wl'); do
+  ip link set "$iface" up 2>/dev/null || true
+done
 
 # Configure NetworkManager profiles in /run/NetworkManager/system-connections/
 if command -v nmcli >/dev/null 2>&1; then
@@ -96,6 +114,13 @@ EOF
   nmcli radio wifi on 2>/dev/null || true
   nmcli connection reload 2>/dev/null || true
   nmcli device wifi rescan 2>/dev/null || true
+
+  # Trigger connection to highest priority configured SSID
+  for net in "${networks[@]}"; do
+    IFS=':' read -r idx ssid psk <<< "$net"
+    echo "appliance-wifi: Activating Wi-Fi connection for '$ssid'..."
+    nmcli connection up "$ssid" 2>/dev/null && break || true
+  done
   exit 0
 fi
 

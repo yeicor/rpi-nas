@@ -67,7 +67,7 @@ docker run --rm --privileged --net=host \
     mkdir -p /mnt/local-root
     mount \"\${MAPPER}p3\" /mnt/local-root -o subvol=@
 
-    SSH_OPTS=\"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\"
+    SSH_OPTS=\"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR\"
 
     echo \"==> Preparing target Pi for atomic Btrfs upgrade...\"
     ssh \$SSH_OPTS \"$SSH_USER@$TARGET\" \"sudo bash -c '
@@ -105,5 +105,41 @@ docker run --rm --privileged --net=host \
       nohup reboot >/dev/null 2>&1 &
     '\"
 
-    echo \"==> Remote OTA Deployment Successful!\"
+    echo \"==> Staged upgrade reboot triggered!\"
+    echo \"==> Waiting for device to reboot and reconnect (polling up to 120s)...\"
+
+    start_time=\$(date +%s)
+    last_reported_status=\"\"
+    while true; do
+      current_time=\$(date +%s)
+      elapsed=\$(( current_time - start_time ))
+      if [[ \$elapsed -gt 120 ]]; then
+        echo \"==> [ERROR] Timed out waiting for device to reconnect after 120s!\"
+        exit 1
+      fi
+
+      status=\$(ssh \$SSH_OPTS -o ConnectTimeout=2 \"$SSH_USER@$TARGET\" \"cat /boot/firmware/status.txt\" 2>/dev/null | grep -E 'boot_status=' | head -n 1 | cut -d= -f2 | tr -d '\r\n' || true)
+
+      if [[ -n \"\$status\" ]]; then
+        if [[ \"\$status\" != \"\$last_reported_status\" ]]; then
+          last_reported_status=\"\$status\"
+          if [[ \"\$status\" == \"testing\" ]]; then
+            echo \"==> Target reconnected (elapsed: \${elapsed}s). System running new generation in 'testing' mode. Waiting for health confirmation...\"
+          fi
+        fi
+
+        if [[ \"\$status\" == \"confirmed\" || \"\$status\" == \"ok\" ]]; then
+          echo \"==> [SUCCESS] Deployment confirmed healthy! System running verified generation (boot_status=\$status).\"
+          exit 0
+        elif [[ \"\$status\" == \"rolled_back\" || \"\$status\" == \"rollback_done\" ]]; then
+          echo \"==> [FAILURE] Generation failed health validation and automatically rolled back (boot_status=\$status)!\"
+          echo \"==> Fetching failure diagnostic report from /persist/rollback-failure.log:\"
+          echo \"--------------------------------------------------------------------------------\"
+          ssh \$SSH_OPTS \"$SSH_USER@$TARGET\" \"cat /persist/rollback-failure.log 2>/dev/null\" || true
+          echo \"--------------------------------------------------------------------------------\"
+          exit 1
+        fi
+      fi
+      sleep 3
+    done
 "

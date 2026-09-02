@@ -142,9 +142,10 @@ update_config=1
 country=${WIFI_COUNTRY:-US}
 EOF_BOOT_WPA
 
-# Configure cmdline.txt for native initramfs overlayfs read-only root protection
+# Configure cmdline.txt for native initramfs overlayfs read-only root protection and regulatory domain
 sed -i "s|root=PARTUUID=[a-z0-9-]*|root=/dev/mmcblk0p3|" /mnt/dst_boot/cmdline.txt
 sed -i "s/rootfstype=ext4/rootfstype=btrfs rootflags=subvol=@,compress=zstd:3 overlayroot=tmpfs ds=nocloud;s=\/boot\/firmware\//" /mnt/dst_boot/cmdline.txt
+sed -i "s/\$/ cfg80211.ieee80211_regdom=${WIFI_COUNTRY:-US} rfkill.default_state=1/" /mnt/dst_boot/cmdline.txt
 
 umount /mnt/src_boot /mnt/dst_boot
 
@@ -189,6 +190,61 @@ datasource:
   NoCloud:
     fs_label: BOOT
 EOF_CLOUD
+
+# Pre-configure NetworkManager Wi-Fi profiles
+mkdir -p /mnt/dst_root/@/etc/NetworkManager/system-connections
+chmod 0700 /mnt/dst_root/@/etc/NetworkManager/system-connections
+
+for idx in 1 2 3 4; do
+  ssid_var="WIFI_SSID_${idx}"
+  psk_var="WIFI_PASSWORD_${idx}"
+  ssid="${!ssid_var:-}"
+  psk="${!psk_var:-}"
+
+  alt_ssid_var="WIFI_${idx}_SSID"
+  alt_psk_var="WIFI_${idx}_PASSWORD"
+  [[ -z "$ssid" ]] && ssid="${!alt_ssid_var:-}"
+  [[ -z "$psk" ]] && psk="${!alt_psk_var:-}"
+
+  if [[ "$idx" -eq 1 && -z "$ssid" ]]; then
+    ssid="${WIFI_SSID:-}"
+    psk="${WIFI_PASSWORD:-}"
+  fi
+
+  if [[ -n "$ssid" && "$ssid" != "REPLACE_ME" ]]; then
+    priority=$(( 50 - idx * 10 ))
+    nm_file="/mnt/dst_root/@/etc/NetworkManager/system-connections/wifi-${idx}.nmconnection"
+    cat > "$nm_file" <<EOF_NM
+[connection]
+id=${ssid}
+uuid=12345678-1234-1234-1234-12345678901${idx}
+type=wifi
+autoconnect=true
+autoconnect-priority=${priority}
+
+[wifi]
+mode=infrastructure
+ssid=${ssid}
+
+EOF_NM
+    if [[ -n "$psk" && "$psk" != "REPLACE_ME" ]]; then
+      cat >> "$nm_file" <<EOF_NM
+[wifi-security]
+key-mgmt=wpa-psk
+psk=${psk}
+
+EOF_NM
+    fi
+    cat >> "$nm_file" <<EOF_NM
+[ipv4]
+method=auto
+
+[ipv6]
+method=auto
+EOF_NM
+    chmod 0600 "$nm_file"
+  fi
+done
 
 # Copy overlay directory into rootfs
 cp -a overlay/* /mnt/dst_root/@/
@@ -238,7 +294,7 @@ systemctl enable appliance-health.service appliance-rollback.service
 
 # Disable and mask conflicting/unneeded services for headless appliance
 systemctl disable resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-networkd-wait-online 2>/dev/null || true
-systemctl mask resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-remount-fs.service systemd-growfs-root.service sshswitch.service systemd-networkd-wait-online.service 2>/dev/null || true
+systemctl mask resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-remount-fs.service systemd-growfs-root.service sshswitch.service systemd-networkd-wait-online.service systemd-rfkill.service systemd-rfkill.socket 2>/dev/null || true
 
 echo "==> Stripping unneeded packages and bloat (headless NAS optimization)..."
 apt-get purge -y --auto-remove \

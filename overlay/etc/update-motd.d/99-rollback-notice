@@ -1,0 +1,15 @@
+#!/bin/sh
+boot_status=""
+if [ -f /boot/firmware/status.txt ]; then
+  boot_status=$(grep -E '^boot_status=' /boot/firmware/status.txt 2>/dev/null | cut -d= -f2-)
+fi
+
+if [ "$boot_status" = "rolled_back" ] && [ -f /persist/rollback-failure.log ]; then
+  echo ""
+  echo "********************************************************************************"
+  echo "  [WARNING] The system recently performed an AUTOMATED ROLLBACK!"
+  echo "  The previous upgrade failed boot health validation."
+  echo "  Diagnostic logs are available at: /persist/rollback-failure.log"
+  echo "********************************************************************************"
+  echo ""
+fi

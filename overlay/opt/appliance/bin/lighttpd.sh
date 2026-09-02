@@ -11,7 +11,9 @@ conf=$run/lighttpd.conf
 install -d -m 0755 -o www-data -g www-data "$run"
 
 # Ensure document root directory exists and is accessible by www-data
-if [[ ! -d "$root" ]]; then
+if ! mkdir -p "$root" 2>/dev/null; then
+  echo "lighttpd: $root not available (data drive disconnected). Falling back to /var/www/html..."
+  root=/var/www/html
   mkdir -p "$root"
 fi
 chown -R "$user:www-data" "$root" 2>/dev/null || true

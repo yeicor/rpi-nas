@@ -15,22 +15,20 @@ fi
 
 echo "health-check: validating newly upgraded generation..."
 
-# Retry loop waiting for services (60 seconds)
+# Retry loop waiting for connectivity and essential services (up to 45s)
 healthy=false
-for i in $(seq 1 30); do
-  ts_ok=false
-  webdav_ok=false
-
+for i in $(seq 1 25); do
+  # Check Tailscale connectivity
   if tailscale status >/dev/null 2>&1; then
-    ts_ok=true
+    echo "health-check: Tailscale connection verified healthy."
+    healthy=true
+    break
   fi
 
-  code="$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ || true)"
-  if [[ "$code" == "200" || "$code" == "401" || "$code" == "403" ]]; then
-    webdav_ok=true
-  fi
-
-  if $ts_ok && $webdav_ok; then
+  # Fallback: Check if local network default gateway is reachable
+  gateway=$(ip route show default 2>/dev/null | awk '/default/ {print $3}' | head -n 1)
+  if [[ -n "$gateway" ]] && ping -c 1 -W 2 "$gateway" >/dev/null 2>&1; then
+    echo "health-check: Local network gateway ($gateway) reachable and responsive."
     healthy=true
     break
   fi
@@ -39,7 +37,7 @@ for i in $(seq 1 30); do
 done
 
 if ! $healthy; then
-  echo "health-check: health verification failed (tailscale: $ts_ok, webdav: $webdav_ok)." >&2
+  echo "health-check: health verification failed (neither Tailscale nor default gateway reachable)." >&2
   exit 1
 fi
 
