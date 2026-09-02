@@ -210,7 +210,7 @@ echo "btrfs" >> /etc/initramfs-tools/modules
 echo "overlay" >> /etc/initramfs-tools/modules
 
 apt-get update
-apt-get install -y overlayroot cloud-init initramfs-tools btrfs-progs lighttpd lighttpd-mod-webdav lighttpd-mod-openssl rfkill iw wireless-regdb curl iptables wpasupplicant iproute2 apache2-utils jq openssh-server
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" overlayroot cloud-init initramfs-tools btrfs-progs lighttpd lighttpd-mod-webdav lighttpd-mod-openssl rfkill iw wireless-regdb hdparm hd-idle sdparm curl iptables wpasupplicant iproute2 apache2-utils jq openssh-server
 
 echo 'overlayroot="tmpfs:swap=0"' > /etc/overlayroot.conf
 
@@ -230,6 +230,7 @@ rm lego.tar.gz
 
 systemctl enable ssh.service 2>/dev/null || true
 systemctl enable appliance-bootstrap.service data-mount.service appliance-wifi.service
+systemctl enable hd-idle.service 2>/dev/null || true
 systemctl enable acme-runtime.timer cloudflare-ddns.timer
 systemctl enable tailscale-init.service tailscale-funnel.service
 systemctl enable lighttpd.service

@@ -1,0 +1,10 @@
+[Unit]
+Description=Mount WebDAV Data Disk
+After=appliance-bootstrap.service
+
+[Mount]
+What=/dev/webdav-data-disk
+Where=/run/webdav-data
+Type=auto
+Options=rw,noatime,lazytime,nofail
+DirectoryMode=0775

@@ -1,0 +1,6 @@
+# Automatically apply 15min spindown (-S 180) and APM 127 to mechanical HDDs
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ATTR{queue/rotational}=="1", RUN+="/usr/sbin/hdparm -B 127 -S 180 /dev/%k"
+
+# Create stable symlink /dev/webdav-data-disk
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]1", SYMLINK+="webdav-data-disk"
+ACTION=="add|change", SUBSYSTEM=="block", KERNEL=="sd[a-z]", ENV{DEVTYPE}=="disk", ENV{ID_PART_TABLE_TYPE}=="", SYMLINK+="webdav-data-disk"

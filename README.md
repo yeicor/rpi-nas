@@ -9,6 +9,7 @@ A minimal, resilient, flash-optimized, and self-updating appliance for the **Ras
 - **Multi-Device Support**: Native out-of-the-box support for both **Raspberry Pi 4** (`rpi4` / 64-bit ARM) and **Raspberry Pi Zero W** (`rpi0w` / 32-bit ARMv6).
 - **Minimal & Maintainable**: Built directly on top of official Raspberry Pi OS Lite using standard systemd services, OverlayFS read-only protection, and minimal shell utilities.
 - **Format-Agnostic Storage**: Plug-and-play swappable external drive (`/dev/sda`). Automatically detects and mounts `ext4`, `btrfs`, `xfs`, `ntfs`, `exfat`, `vfat`, or `f2fs` to `/run/webdav-data`.
+- **HDD Longevity & Auto-Spindown**: Automatic 15-minute inactivity spindown via `hdparm` (APM 127, `-S 180`) and `hd-idle`. Features systemd on-demand automount with idle auto-unmounting (`TimeoutIdleSec=15min`) so the disk remains completely asleep until accessed.
 - **Multi-Network Wi-Fi**: Connects up to 4 configured Wi-Fi networks in priority order with automatic failover, regulatory country initialization, and WPA2/WPA3 support.
 - **Tailscale & Remote Access**: Integrated Tailscale SSH, exit-node advertising, and optional Tailscale Funnel for public HTTPS exposure without port forwarding.
 - **Direct WebDAV with Automated TLS**: Lighttpd WebDAV server over port 443 with automated Let's Encrypt certificates (via Cloudflare DNS-01 and Lego) and Dynamic DNS.

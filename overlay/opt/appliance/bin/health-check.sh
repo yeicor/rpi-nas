@@ -15,17 +15,17 @@ fi
 
 echo "health-check: validating newly upgraded generation..."
 
-# Retry loop waiting for services
+# Retry loop waiting for services (60 seconds)
 healthy=false
 for i in $(seq 1 30); do
   ts_ok=false
   webdav_ok=false
 
-  if tailscale ip -4 >/dev/null 2>&1; then
+  if tailscale status >/dev/null 2>&1; then
     ts_ok=true
   fi
 
-  code="$(curl -k -s -o /dev/null -w "%{http_code}" https://127.0.0.1:443/ || true)"
+  code="$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:8080/ || true)"
   if [[ "$code" == "200" || "$code" == "401" || "$code" == "403" ]]; then
     webdav_ok=true
   fi
@@ -43,7 +43,7 @@ if ! $healthy; then
   exit 1
 fi
 
-echo "health-check: generation verified successfully! Confirming boot status as 'ok'."
+echo "health-check: generation verified successfully! Confirming boot status as 'confirmed'."
 mount -o remount,rw "$boot_mnt" || true
-echo "boot_status=ok" > "$status_file"
+echo "boot_status=confirmed" > "$status_file"
 mount -o remount,ro "$boot_mnt" || true

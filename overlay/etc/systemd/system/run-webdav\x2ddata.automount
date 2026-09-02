@@ -1,0 +1,10 @@
+[Unit]
+Description=Automount WebDAV data disk on demand
+After=appliance-bootstrap.service
+
+[Automount]
+Where=/run/webdav-data
+TimeoutIdleSec=15min
+
+[Install]
+WantedBy=multi-user.target

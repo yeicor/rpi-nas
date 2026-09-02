@@ -1,12 +1,6 @@
 [Unit]
 Description=Rollback an unconfirmed boot failure
-After=appliance-health.service
-Wants=appliance-health.service
 
 [Service]
 Type=oneshot
-RemainAfterExit=yes
 ExecStart=/opt/appliance/bin/rollback.sh
-
-[Install]
-WantedBy=multi-user.target

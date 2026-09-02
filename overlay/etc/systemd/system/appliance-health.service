@@ -1,6 +1,7 @@
 [Unit]
 Description=Validate the booted appliance generation
 After=tailscaled.service ssh.service lighttpd.service
+OnFailure=appliance-rollback.service
 
 [Service]
 Type=oneshot
