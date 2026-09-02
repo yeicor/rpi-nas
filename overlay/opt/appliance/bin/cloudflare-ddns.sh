@@ -5,10 +5,15 @@ set -euo pipefail
 
 api=https://api.cloudflare.com/client/v4
 auth=(-H "Authorization: Bearer ${CLOUDFLARE_API_TOKEN}" -H "Content-Type: application/json")
-get() { curl -fsS --retry 3 --connect-timeout 10 --max-time 30 "$@"; }
+get() { curl -fsS --retry 5 --retry-delay 3 --retry-all-errors --connect-timeout 10 --max-time 30 "$@"; }
 
-public_ip="$(get https://api4.ipify.org)"
-[[ "$public_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || exit 1
+public_ip=""
+for i in $(seq 1 10); do
+  public_ip="$(get https://api4.ipify.org 2>/dev/null || true)"
+  [[ "$public_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] && break
+  sleep 3
+done
+[[ "$public_ip" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]] || { echo "cloudflare-ddns: Could not determine public IP (network offline or DNS delay). Will retry on next timer." >&2; exit 0; }
 
 zone_id=""
 suffix="$WEBDAV_DOMAIN"

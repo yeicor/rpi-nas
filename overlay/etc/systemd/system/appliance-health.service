@@ -1,0 +1,10 @@
+[Unit]
+Description=Validate the booted appliance generation
+After=tailscaled.service ssh.service lighttpd.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/appliance/bin/health-check.sh
+
+[Install]
+WantedBy=multi-user.target

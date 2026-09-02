@@ -1,147 +1,101 @@
 #!/usr/bin/env bash
 set -euo pipefail
-cd "$(dirname "$0")"
 
-CONFIG_ENV="${CONFIG_ENV:-config.env}"
-REBOOT=false
-TARGET=""
-HOST_ARG=""
-
-usage() {
-  echo "Usage: $0 <rpi0w|rpi4> <tailscale-host-or-ip> [--reboot]" >&2
-  echo ""
-  echo "Deploy NixOS system updates transactionally over SSH/Tailscale using Docker."
-  echo ""
-  echo "Arguments:"
-  echo "  rpi4|rpi0w              Target hardware platform"
-  echo "  <host>[:<port>]         Target device hostname, IP, or Tailscale node name"
-  echo ""
-  echo "Options:"
-  echo "  --reboot                Automatically reboot the appliance after deploying update"
-  echo ""
-  echo "Environment variables:"
-  echo "  CONFIG_ENV              Path to config.env (default: config.env)"
-  echo "  ADMIN_USER              SSH username (defaults to ADMIN_USERNAME in config.env or 'admin')"
-  echo "  SSH_KEY                 Path to identity file for SSH (-i)"
-  exit 2
-}
-
-for arg in "$@"; do
-  case "$arg" in
-    --reboot) REBOOT=true ;;
-    rpi0w|rpi4) TARGET="$arg" ;;
-    --help|-h) usage ;;
-    *)
-      if [[ -z "$HOST_ARG" ]]; then
-        HOST_ARG="$arg"
-      else
-        echo "Unknown argument: $arg" >&2
-        usage
-      fi
-      ;;
-  esac
-done
-
-[[ -n "$TARGET" && -n "$HOST_ARG" ]] || usage
-command -v docker >/dev/null 2>&1 || { echo "Error: docker is required for deployment." >&2; exit 1; }
-command -v ssh >/dev/null 2>&1 || { echo "Error: ssh is required for deployment." >&2; exit 1; }
-
-ssh_opts=(-o BatchMode=yes -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null)
-if [[ -n "${SSH_KEY:-}" ]]; then
-  ssh_opts+=(-i "$SSH_KEY")
-fi
-if [[ "$HOST_ARG" =~ ^(.+):([0-9]+)$ ]]; then
-  host="${BASH_REMATCH[1]}"
-  ssh_opts+=(-p "${BASH_REMATCH[2]}")
-else
-  host="$HOST_ARG"
-fi
-
-admin_user="${ADMIN_USER:-}"
-if [[ -z "$admin_user" && -f "$CONFIG_ENV" ]]; then
-  cfg_user="$(grep -E '^ADMIN_USERNAME=' "$CONFIG_ENV" | cut -d= -f2- | tr -d ' "' || true)"
-  [[ -n "$cfg_user" ]] && admin_user="$cfg_user"
-fi
-admin_user="${admin_user:-admin}"
-
-mkdir -p .cache/nix .cache/xdg-cache .cache/xdg-config
-if [ ! -d .cache/nix/store ]; then
-  echo "==> Initializing persistent local build cache in .cache/nix..."
-  docker run --rm -v "$(pwd)/.cache/nix:/host-nix" ghcr.io/nixos/nix:latest cp -a /nix/. /host-nix/
-fi
-
-HOST_UID="$(id -u)"
-HOST_GID="$(id -g)"
-
-echo "==> Building closure for $TARGET in Docker..."
-eval "$(docker run --rm \
-  -v "$(pwd):/app" \
-  -v "$(pwd)/.cache/nix:/nix" \
-  -v "$(pwd)/.cache/xdg-cache:/root/.cache" \
-  -v "$(pwd)/.cache/xdg-config:/root/.config" \
-  -w /app \
-  -e HOST_UID="$HOST_UID" \
-  -e HOST_GID="$HOST_GID" \
-  ghcr.io/nixos/nix:latest bash -c '
-    set -euo pipefail
-    mkdir -p /etc
-    cat << "EOF_GIT" > /etc/gitconfig
-[safe]
-	directory = *
-EOF_GIT
-    git config --system --add safe.directory '*' 2>/dev/null || true
-    git config --global --add safe.directory '*' 2>/dev/null || true
-    path="$(nix --extra-experimental-features "nix-command flakes" build ".#nixosConfigurations.'$TARGET'.config.system.build.toplevel" --no-link --print-out-paths)"
-    size="$(nix-store -q --size "$path")"
-    chown -R "$HOST_UID:$HOST_GID" /app/.cache 2>/dev/null || true
-    echo "TARGET_PATH=\"$path\""
-    echo "CLOSURE_SIZE=\"$size\""
-  ')"
-
-echo "==> target: $TARGET"
-echo "==> closure: $TARGET_PATH"
-echo "==> closure bytes: $CLOSURE_SIZE"
-echo "==> user: $admin_user"
-
-echo "==> asking device to prepare its writable Nix store"
-ssh "${ssh_opts[@]}" "${admin_user}@${host}" sudo appliance-prepare-update "$CLOSURE_SIZE"
-
-echo "==> computing missing closure paths on target"
-target_paths="$(ssh "${ssh_opts[@]}" "${admin_user}@${host}" 'nix-store -qR /run/current-system 2>/dev/null || true')"
-
-echo "==> streaming missing store paths to target"
-docker run --rm \
-  -v "$(pwd):/app" \
-  -v "$(pwd)/.cache/nix:/nix" \
-  -w /app \
-  ghcr.io/nixos/nix:latest bash -c '
-    target_paths="'"$target_paths"'"
-    all_paths="$(nix-store -qR "'"$TARGET_PATH"'")"
-    missing=()
-    for p in $all_paths; do
-      if ! grep -Fxq "$p" <<< "$target_paths"; then
-        missing+=("$p")
-      fi
-    done
-    if [[ ${#missing[@]} -gt 0 ]]; then
-      nix-store --export "${missing[@]}"
-    fi
-  ' | ssh "${ssh_opts[@]}" "${admin_user}@${host}" sudo nix-store --import
-
-echo "==> installing transactionally"
-ssh "${ssh_opts[@]}" "${admin_user}@${host}" sudo appliance-install-generation "$TARGET_PATH"
-
-if [[ "$REBOOT" == true ]]; then
-  echo "==> rebooting $host"
-  ssh "${ssh_opts[@]}" "${admin_user}@${host}" 'sudo systemctl reboot || sudo reboot' || true
-  echo "==> waiting for the new generation to return"
-  for _ in $(seq 1 60); do
-    if ssh "${ssh_opts[@]}" "${admin_user}@${host}" true 2>/dev/null; then
-      echo "==> device is reachable again"
-      exit 0
-    fi
-    sleep 2
-  done
-  echo "==> timed out waiting for device reboot" >&2
+if [[ $# -lt 1 ]]; then
+  echo "Usage: $0 <target-ip-or-tailscale-name>"
   exit 1
 fi
+
+TARGET="$1"
+IMG="result/rpi4.img.zst"
+
+if [[ ! -f "$IMG" ]]; then
+  if [[ -f "result/rpi4.img" ]]; then
+    IMG="result/rpi4.img"
+  else
+    echo "Error: image not found in result/. Run ./build.sh first."
+    exit 1
+  fi
+fi
+
+if [[ -f config.env ]]; then
+  . config.env
+fi
+SSH_USER="${ADMIN_USERNAME:-yeicor}"
+
+echo "==> Deploying to $TARGET as $SSH_USER via Docker..."
+
+docker run --rm --privileged --net=host \
+  -v "$HOME/.ssh:/root/.ssh:ro" \
+  -v "$(pwd):/work" \
+  debian:bookworm bash -c "
+    set -euo pipefail
+    cd /work
+    
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq
+    apt-get install -y -qq btrfs-progs kpartx openssh-client rsync zstd >/dev/null
+
+    IMG_RAW=\"result/rpi4.img\"
+    if [[ -f \"result/rpi4.img.zst\" ]]; then
+      echo \"==> Decompressing image for delta extraction...\"
+      zstd -d -f result/rpi4.img.zst -o \"\$IMG_RAW\"
+    fi
+
+    echo \"==> Mounting image inside container...\"
+    LOOP_DEV=\$(losetup -f --show -P \"\$IMG_RAW\")
+    kpartx -a \"\$LOOP_DEV\"
+    MAPPER=\"/dev/mapper/\$(basename \"\$LOOP_DEV\")\"
+
+    cleanup() {
+      echo \"==> Cleaning up container loop mounts...\"
+      umount /mnt/local-root 2>/dev/null || true
+      kpartx -d \"\$LOOP_DEV\" 2>/dev/null || true
+      losetup -d \"\$LOOP_DEV\" 2>/dev/null || true
+      rm -f \"\$IMG_RAW\" 2>/dev/null || true
+    }
+    trap cleanup EXIT
+
+    mkdir -p /mnt/local-root
+    mount \"\${MAPPER}p3\" /mnt/local-root -o subvol=@
+
+    SSH_OPTS=\"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null\"
+
+    echo \"==> Preparing target Pi for atomic Btrfs upgrade...\"
+    ssh \$SSH_OPTS \"$SSH_USER@$TARGET\" \"sudo bash -c '
+      set -euo pipefail
+      mkdir -p /mnt/btrfs-root
+      btrfs_dev=\\\$(findmnt -n -o SOURCE /media/root-ro 2>/dev/null | cut -d\\\"[\\\" -f1)
+      [[ -z \"\\\$btrfs_dev\" ]] && btrfs_dev=\\\"/dev/mmcblk0p3\\\"
+      mount -t btrfs -o subvolid=5 \\\"\\\$btrfs_dev\\\" /mnt/btrfs-root
+      
+      btrfs subvolume delete /mnt/btrfs-root/@testing 2>/dev/null || rm -rf /mnt/btrfs-root/@testing
+      btrfs subvolume delete /mnt/btrfs-root/@bad 2>/dev/null || rm -rf /mnt/btrfs-root/@bad
+      
+      btrfs subvolume snapshot /mnt/btrfs-root/@ /mnt/btrfs-root/@testing
+    '\"
+
+    echo \"==> Pushing deltas via rsync...\"
+    rsync -avz --delete --numeric-ids --rsync-path=\"sudo rsync\" -e \"ssh \$SSH_OPTS\" /mnt/local-root/ \"$SSH_USER@$TARGET:/mnt/btrfs-root/@testing/\"
+
+    echo \"==> Atomically swapping subvolumes and setting test boot status...\"
+    ssh \$SSH_OPTS \"$SSH_USER@$TARGET\" \"sudo bash -c '
+      set -euo pipefail
+      
+      btrfs subvolume delete /mnt/btrfs-root/@rollback 2>/dev/null || rm -rf /mnt/btrfs-root/@rollback
+      
+      mv /mnt/btrfs-root/@ /mnt/btrfs-root/@rollback
+      mv /mnt/btrfs-root/@testing /mnt/btrfs-root/@
+      
+      mount -o remount,rw /boot/firmware
+      echo \\\"boot_status=testing\\\" > /boot/firmware/status.txt
+      mount -o remount,ro /boot/firmware
+      
+      umount /mnt/btrfs-root 2>/dev/null || true
+      
+      echo \\\"Upgrade staged! Rebooting into new generation...\\\"
+      nohup reboot >/dev/null 2>&1 &
+    '\"
+
+    echo \"==> Remote OTA Deployment Successful!\"
+"

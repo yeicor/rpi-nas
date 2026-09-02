@@ -1,0 +1,8 @@
+[Unit]
+Description=Obtain/renew Cloudflare DNS-01 certificate
+After=appliance-bootstrap.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/appliance/bin/acme-runtime.sh

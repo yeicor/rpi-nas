@@ -1,0 +1,10 @@
+[Unit]
+Description=Update Cloudflare A record
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=5m
+RandomizedDelaySec=2m
+
+[Install]
+WantedBy=timers.target

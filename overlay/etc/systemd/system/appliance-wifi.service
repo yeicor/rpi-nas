@@ -1,0 +1,14 @@
+[Unit]
+Description=Connect to configured Wi-Fi network
+After=appliance-bootstrap.service network-pre.target
+Before=network-online.target tailscaled.service
+Wants=network.target
+
+[Service]
+Type=simple
+Restart=on-failure
+RestartSec=5
+ExecStart=/opt/appliance/bin/wifi.sh
+
+[Install]
+WantedBy=multi-user.target

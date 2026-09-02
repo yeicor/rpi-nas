@@ -1,0 +1,10 @@
+[Unit]
+Description=Obtain/renew Cloudflare DNS-01 certificate
+
+[Timer]
+OnBootSec=5m
+OnUnitActiveSec=12h
+RandomizedDelaySec=30m
+
+[Install]
+WantedBy=timers.target

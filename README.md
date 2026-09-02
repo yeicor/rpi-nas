@@ -1,19 +1,18 @@
-# NixOS Raspberry Pi WebDAV Appliance
+# Raspberry Pi WebDAV Appliance (Debian / RPi OS)
 
-A resilient, secure, flash-optimized, and self-updating NixOS storage appliance for the **Raspberry Pi 4B** (`aarch64`) and **Raspberry Pi Zero W** (`armv6l`).
+A minimal, resilient, flash-optimized, and self-updating appliance for the **Raspberry Pi 4B** (`aarch64`) based on Raspberry Pi OS / Debian Trixie.
 
 ---
 
 ## Key Highlights
 
-- **Flash Endurance & Immutability**: Read-only root filesystem (`ro`), volatile RAM tmpfs for `/var`, `/tmp`, and `/run`, and an auto-expanding **F2FS** `PERSIST` partition with read-only bind mounts to protect SD card lifespan.
-- **Format-Agnostic Storage**: Plug-and-play swappable external drive (`/dev/sda`). Automatically detects and mounts `ext4`, `btrfs`, `xfs`, `ntfs`, `exfat`, `vfat`, or `f2fs` without reformatting or modifying existing data.
-- **Multi-Network Wi-Fi**: Store up to 4 Wi-Fi networks in priority order with automatic failover and WPA2/WPA3 support. Dual-DHCP metric routing prioritizes wired Ethernet when connected.
-- **Tailscale & Remote Access**: Built-in Tailscale SSH, exit-node routing, and optional Tailscale Funnel for public HTTPS exposure without router port forwarding.
-- **Direct WebDAVS with Automated TLS**: Direct HTTPS WebDAV over port 443 with automated Let's Encrypt certificates (via Cloudflare DNS-01) and Dynamic DNS.
-- **PAM Authentication**: Secure HTTP Basic authentication against Unix administrator credentials with zero plaintext passwords stored on flash.
-- **Transactional OTA Upgrades & Rollbacks**: Remote deployments over SSH/Tailscale (`./deploy.sh`) with atomic switching, automatic garbage collection, and automated health-check rollback protection.
-- **Headless Diagnostics**: Hardware UART serial console enabled by default, plus automatic diagnostic dumps to `LAST_BOOT_FAILURE.txt` on the FAT32 boot partition if boot fails (zero SD write wear during healthy boots).
+- **Minimal & Maintainable**: Built directly on top of official Raspberry Pi OS Lite (upgraded to Debian Trixie) using standard systemd services and minimal shell utilities.
+- **Format-Agnostic Storage**: Plug-and-play swappable external drive (`/dev/sda`). Automatically detects and mounts `ext4`, `btrfs`, `xfs`, `ntfs`, `exfat`, `vfat`, or `f2fs` to `/run/webdav-data`.
+- **Multi-Network Wi-Fi**: Connects up to 4 configured Wi-Fi networks in priority order with automatic failover and WPA2/WPA3 support.
+- **Tailscale & Remote Access**: Integrated Tailscale SSH, exit-node advertising, and optional Tailscale Funnel for public HTTPS exposure without port forwarding.
+- **Direct WebDAV with Automated TLS**: Lighttpd WebDAV server over port 443 with automated Let's Encrypt certificates (via Cloudflare DNS-01 and Lego) and Dynamic DNS.
+- **Live Delta Upgrades via Rsync (`./deploy.sh`)**: Push updates remotely over SSH in seconds. Uses Btrfs subvolume snapshots to only transmit changed files over the wire.
+- **Automated Health-Check & Rollback**: Safe transactional boots. If an upgrade fails to boot or reach network health, the system automatically rolls back to the previous Btrfs subvolume.
 
 ---
 
@@ -21,10 +20,10 @@ A resilient, secure, flash-optimized, and self-updating NixOS storage appliance 
 
 ```text
 SD Card Partitions:
-├── [1] FIRMWARE (FAT32, /boot/firmware)  -> RPi firmware, U-Boot, extlinux, failure dumps
-├── [2] NIXOS_SD (ext4, /)               -> Immutable OS root mounted read-only
-└── [3] PERSIST  (F2FS, /persist-raw)    -> Nix store (/nix) & persistent state (/persist)
-                                            (Auto-expanded to card capacity on 1st boot)
+├── [1] BOOT     (FAT32, /boot/firmware)  -> RPi firmware, kernel, cmdline.txt, status.txt
+├── [2] PERSIST  (Ext4,  /persist)        -> Persistent configuration & credentials
+└── [3] ROOTFS   (Btrfs, /)               -> Btrfs subvolume (@ active, @rollback backup)
+                                             (Auto-expands on card)
 
 External Drive:
 └── [/dev/sda] Storage Drive             -> Formatted as any filesystem; mounts to /run/webdav-data
@@ -36,34 +35,27 @@ External Drive:
 
 ### 1. Configuration
 
-Copy and customize the template files (all parameters and options are documented inside):
+Copy and customize the template files:
 
 ```sh
 cp config.env.example config.env
 cp secrets.env.example secrets.env
 ```
 
-- **`config.env`** ([config.env.example](config.env.example)): System hostname, administrator username & SSH public key, external storage device path, WebDAV domain, ACME email, and optional Wi-Fi networks (up to 4 in priority order with regulatory country code).
-- **`secrets.env`** ([secrets.env.example](secrets.env.example)): Tailscale auth key, Cloudflare API token, administrator PAM password hash (generate with `mkpasswd -m yescrypt` or `openssl passwd -6`), and optional Wi-Fi passphrases.
+- **`config.env`** ([config.env.example](config.env.example)): System hostname, administrator username & SSH public key, external storage device path, WebDAV domain, ACME email, and optional Wi-Fi networks.
+- **`secrets.env`** ([secrets.env.example](secrets.env.example)): Tailscale auth key, Cloudflare API token, administrator password hash, and optional Wi-Fi passphrases.
 
 ---
 
 ### 2. Build the Ready-to-Flash Image
 
-Build images in an isolated Docker container with local caching in `.cache/nix`:
+Build the appliance image in an isolated Docker container:
 
 ```sh
-# Build for Raspberry Pi 4 (AArch64)
-./build.sh rpi4
-
-# Build for Raspberry Pi Zero W (ARMv6)
-./build.sh rpi0w
-
-# Build both targets in parallel
-./build.sh all
+./build.sh
 ```
 
-Output compressed images are written to `result/rpi4.img.zst` and `result/rpi0w.img.zst`.
+Output compressed image is written to `result/rpi4.img.zst`.
 
 ---
 
@@ -75,55 +67,21 @@ Write the compressed image directly to your SD card (replace `/dev/sdX` with you
 zstdcat result/rpi4.img.zst | sudo dd of=/dev/sdX bs=4M status=progress conv=fsync
 ```
 
-Insert the SD card and attach your external data disk (`/dev/sda`). Power on the Raspberry Pi. On the first boot, the `PERSIST` partition automatically expands to fill the SD card.
+Insert the SD card and attach your external data disk (`/dev/sda`). Power on the Raspberry Pi 4.
 
 ---
 
-### 4. Remote Live Upgrades (OTA)
+### 4. Remote Live Upgrades (Delta Push)
 
-Deploy system updates transactionally over SSH or Tailscale without re-flashing:
+After rebuilding the image locally with `./build.sh`, deploy minimal file deltas over SSH without re-flashing:
 
 ```sh
-./deploy.sh rpi4 rpi-webdav --reboot
+./deploy.sh <raspberry-pi-ip>
 ```
 
 The upgrade workflow:
-1. Builds and evaluates the target closure inside Docker using persistent local caches.
-2. Checks target disk space, prunes older generations (retaining active and last-known-good), and streams missing Nix store paths over SSH.
-3. Transactionally switches to the new generation and reboots.
-4. Performs an automated post-reboot health check (SSH, Tailscale, WebDAV). If unhealthy, it automatically rolls back to the previous generation and reboots safely.
-
----
-
-## Management & Status
-
-Connect via SSH with your configured administrator user:
-
-```sh
-ssh admin@rpi-webdav
-```
-
-Run the built-in status command for a live overview of system generation, mount topology, network IPs, Wi-Fi link state, Tailscale, and WebDAV status:
-
-```sh
-appliance-status
-```
-
----
-
-## Headless Diagnostics & Troubleshooting
-
-- **Live Serial Console**: UART is enabled on GPIO 14/15 (`console=serial0,115200`) for early boot output via a USB-to-UART adapter.
-- **Failure Log Dump**: If boot fails, diagnostic data (dmesg, failed units, network state, mounts) is written to `LAST_BOOT_FAILURE.txt` on the FAT32 boot partition (`/boot/firmware`). Inspect it on any computer by reading the SD card.
-
----
-
-## Automated CI & Testing
-
-An end-to-end integration test suite is provided in `test/e2e-test.sh` and runs automatically on GitHub Actions ([.github/workflows/build-and-test.yml](.github/workflows/build-and-test.yml)):
-
-```sh
-./test/e2e-test.sh
-```
-
-Tests include QEMU hardware emulation, multi-network Wi-Fi generation, SFTP read/write roundtrip, WebDAV PAM HTTP Basic operations, and live OTA deployment + rollback validation.
+1. Mounts the newly built image locally.
+2. Creates a live Btrfs snapshot (`@testing`) on the running Raspberry Pi.
+3. Streams only the modified files to the Pi via `rsync`.
+4. Atomically swaps the active `@` and `@rollback` subvolumes.
+5. Reboots and performs an automatic health-check. If unhealthy, it automatically reverts to the previous subvolume.

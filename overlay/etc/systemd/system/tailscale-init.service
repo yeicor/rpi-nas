@@ -1,0 +1,13 @@
+[Unit]
+Description=Initialize Tailscale Connection
+After=appliance-bootstrap.service appliance-wifi.service tailscaled.service network-online.target
+Wants=network-online.target
+Requires=tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/appliance/bin/tailscale-init.sh
+
+[Install]
+WantedBy=multi-user.target

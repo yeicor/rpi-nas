@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 . /persist/config.env
 . /persist/secrets.env
 
@@ -12,15 +11,16 @@ export CLOUDFLARE_DNS_API_TOKEN
 cert="$state/lego/certificates/${WEBDAV_DOMAIN}.crt"
 key="$state/lego/certificates/${WEBDAV_DOMAIN}.key"
 
+# lego will be installed to /usr/local/bin by build.sh
 if [[ ! -s "$cert" || ! -s "$key" ]]; then
-  /run/current-system/sw/bin/lego \
+  lego \
     --path "$state/lego" \
     --email "$ACME_EMAIL" \
     --accept-tos \
     --dns cloudflare \
     --domains "$WEBDAV_DOMAIN" run
 else
-  /run/current-system/sw/bin/lego \
+  lego \
     --path "$state/lego" \
     --email "$ACME_EMAIL" \
     --accept-tos \

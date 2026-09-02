@@ -1,0 +1,15 @@
+[Unit]
+Description=Initialize persistent appliance state
+DefaultDependencies=no
+After=local-fs.target
+Before=network-pre.target ssh.service data-mount.service tailscaled.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/appliance/bin/bootstrap.sh
+StandardOutput=journal+console
+StandardError=journal+console
+
+[Install]
+WantedBy=sysinit.target

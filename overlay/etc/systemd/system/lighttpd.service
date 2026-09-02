@@ -1,0 +1,15 @@
+[Unit]
+Description=Lighttpd WebDAV Daemon
+After=network.target data-mount.service appliance-bootstrap.service
+Wants=data-mount.service
+
+[Service]
+Type=exec
+ExecStartPre=/bin/mkdir -p /run/lighttpd
+ExecStartPre=/bin/chown www-data:www-data /run/lighttpd
+ExecStart=/opt/appliance/bin/lighttpd.sh
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

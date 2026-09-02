@@ -1,0 +1,12 @@
+[Unit]
+Description=Publish WebDAV through Tailscale Funnel
+After=tailscale-init.service lighttpd.service
+Requires=tailscale-init.service lighttpd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/opt/appliance/bin/funnel.sh
+
+[Install]
+WantedBy=multi-user.target

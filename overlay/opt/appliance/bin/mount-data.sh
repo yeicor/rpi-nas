@@ -20,10 +20,8 @@ fi
 
 mount -t auto -o rw,noatime,lazytime "$device" "$mountpoint"
 
-# Never format or repartition the user's disk. Ensure the webdav directory exists
-# with appropriate permissions for the configured admin user.
 if [[ ! -d "$mountpoint/webdav" ]]; then
-  mkdir -m 0775 "$mountpoint/webdav" 2>/dev/null || mkdir "$mountpoint/webdav" 2>/dev/null || true
+  mkdir -m 0775 "$mountpoint/webdav" 2>/dev/null || true
 fi
 chmod 0775 "$mountpoint/webdav" 2>/dev/null || true
 chown "$user:users" "$mountpoint/webdav" 2>/dev/null || true

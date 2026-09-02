@@ -1,0 +1,14 @@
+[Unit]
+Description=Mount the swappable WebDAV data disk
+After=appliance-bootstrap.service
+Before=lighttpd.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+TimeoutStartSec=2min
+ExecStart=/opt/appliance/bin/mount-data.sh
+ExecStop=/usr/bin/umount /run/webdav-data
+
+[Install]
+WantedBy=multi-user.target

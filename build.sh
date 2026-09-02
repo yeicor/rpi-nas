@@ -4,171 +4,262 @@ cd "$(dirname "$0")"
 
 CONFIG_ENV="${CONFIG_ENV:-config.env}"
 SECRETS_ENV="${SECRETS_ENV:-secrets.env}"
-TARGET="all"
 
-for arg in "$@"; do
-  case "$arg" in
-    rpi4|rpi0w|all) TARGET="$arg" ;;
-    --help|-h)
-      echo "Usage: $0 [rpi4|rpi0w|all]"
-      echo ""
-      echo "Builds ready-to-flash Raspberry Pi SD images in an isolated Docker container."
-      echo ""
-      echo "Arguments:"
-      echo "  rpi4         Build image for Raspberry Pi 4B (AArch64)"
-      echo "  rpi0w        Build image for Raspberry Pi Zero W (ARMv6)"
-      echo "  all          Build all targets in parallel (default)"
-      echo ""
-      echo "Environment variables:"
-      echo "  CONFIG_ENV   Path to config.env (default: config.env)"
-      echo "  SECRETS_ENV  Path to secrets.env (default: secrets.env)"
-      echo "  ZSTD_LEVEL   Zstandard compression level (default: 6)"
-      exit 0
-      ;;
-    *)
-      echo "Unknown argument: $arg" >&2
-      echo "Usage: $0 [rpi4|rpi0w|all]" >&2
-      exit 2
-      ;;
-  esac
-done
+command -v docker >/dev/null 2>&1 || { echo "Error: docker is required."; exit 1; }
+[[ -f "$CONFIG_ENV" && -f "$SECRETS_ENV" ]] || { echo "Error: missing config files"; exit 1; }
 
-command -v docker >/dev/null 2>&1 || { echo "Error: docker is required to build images." >&2; exit 1; }
+mkdir -p .cache result
 
-[[ -s "$CONFIG_ENV" && -s "$SECRETS_ENV" ]] || {
-  echo "Error: Missing or empty config file: $CONFIG_ENV or $SECRETS_ENV" >&2
-  echo "Create them from config.env.example and secrets.env.example" >&2
-  exit 1
-}
+echo "==> Building Raspberry Pi OS Trixie Appliance image in Docker..."
+docker run --rm -i --privileged \
+  -v "$(pwd):/app" \
+  -w /app \
+  debian:bookworm bash << 'EOF_DOCKER'
+set -euo pipefail
 
-# Ensure persistent local build cache directories exist in .cache/
-mkdir -p .cache/nix .cache/xdg-cache .cache/xdg-config result
-if [ ! -d .cache/nix/store ]; then
-  echo "==> Initializing persistent local build cache in .cache/nix..."
-  docker run --rm -v "$(pwd)/.cache/nix:/host-nix" ghcr.io/nixos/nix:latest cp -a /nix/. /host-nix/
+export DEBIAN_FRONTEND=noninteractive
+
+mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
+
+apt-get update -qq
+apt-get install -y -qq wget xz-utils parted util-linux kpartx e2fsprogs btrfs-progs dosfstools qemu-user-static binfmt-support rsync curl zstd
+
+IMG_DATE="2026-06-19"
+IMG_NAME="2026-06-18-raspios-trixie-arm64-lite"
+IMG_URL="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-${IMG_DATE}/${IMG_NAME}.img.xz"
+
+if [ ! -f ".cache/${IMG_NAME}.img" ]; then
+  echo "==> Downloading official Raspberry Pi OS Trixie Lite image..."
+  wget -q --show-progress -O ".cache/${IMG_NAME}.img.xz" "$IMG_URL"
+  echo "==> Decompressing base image..."
+  xz -d -T0 ".cache/${IMG_NAME}.img.xz"
 fi
 
-HOST_UID="$(id -u)"
-HOST_GID="$(id -g)"
-DOCKER_INTERACTIVE=$([ -t 0 ] && echo "-it" || echo "-i")
+echo "==> Preparing working image (3GB with Btrfs compression)..."
+rm -f result/rpi4.img result/rpi4.img.zst
+truncate -s 3G result/rpi4.img
 
-CFG_ABS="$(readlink -f "$CONFIG_ENV")"
-SEC_ABS="$(readlink -f "$SECRETS_ENV")"
+echo "==> Partitioning image..."
+parted -s result/rpi4.img mklabel msdos
+# Partition 1: BOOT (FAT32) 512MB
+parted -s result/rpi4.img mkpart primary fat32 4MiB 516MiB
+# Partition 2: PERSIST (Ext4) 512MB
+parted -s result/rpi4.img mkpart primary ext4 516MiB 1028MiB
+# Partition 3: ROOT (Btrfs) rest of image
+parted -s result/rpi4.img mkpart primary btrfs 1028MiB 100%
 
-DOCKER_MOUNTS=(
-  -v "$(pwd):/app"
-  -v "$(pwd)/.cache/nix:/nix"
-  -v "$(pwd)/.cache/xdg-cache:/root/.cache"
-  -v "$(pwd)/.cache/xdg-config:/root/.config"
-  -v "$CFG_ABS:/run/app-config/config.env:ro"
-  -v "$SEC_ABS:/run/app-config/secrets.env:ro"
-)
+# Create loop devices if missing in docker container
+mknod /dev/loop-control c 10 237 2>/dev/null || true
+for i in $(seq 0 99); do mknod /dev/loop$i b 7 $i 2>/dev/null || true; done
 
-echo "==> Building '$TARGET' in Docker (ghcr.io/nixos/nix:latest)..."
+# Mount original image to copy data
+LOOP_SRC=$(losetup -f --show ".cache/${IMG_NAME}.img")
+kpartx -a "$LOOP_SRC"
+MAP_SRC="/dev/mapper/$(basename $LOOP_SRC)"
 
-exec docker run --rm $DOCKER_INTERACTIVE \
-  "${DOCKER_MOUNTS[@]}" \
-  -w /app \
-  -e HOST_UID="$HOST_UID" \
-  -e HOST_GID="$HOST_GID" \
-  -e ZSTD_LEVEL="${ZSTD_LEVEL:-6}" \
-  -e TARGET="$TARGET" \
-  ghcr.io/nixos/nix:latest bash -c '
-    set -euo pipefail
-    mkdir -p /etc
-    cat << "EOF_GIT" > /etc/gitconfig
-[safe]
-	directory = *
-EOF_GIT
-    git config --system --add safe.directory '*' 2>/dev/null || true
-    git config --global --add safe.directory '*' 2>/dev/null || true
+# Mount new image
+LOOP_DST=$(losetup -f --show result/rpi4.img)
+kpartx -a "$LOOP_DST"
+MAP_DST="/dev/mapper/$(basename $LOOP_DST)"
 
-    mkdir -p ~/.config/nix
-    cat << "EOF_NIX" > ~/.config/nix/nix.conf
-extra-experimental-features = nix-command flakes
-max-jobs = auto
-cores = 0
-download-attempts = 5
-connect-timeout = 60
-stalled-download-timeout = 90
-http-connections = 50
-EOF_NIX
+cleanup() {
+  echo "==> Cleaning up loop devices..."
+  kpartx -d "$LOOP_SRC" 2>/dev/null || true
+  losetup -d "$LOOP_SRC" 2>/dev/null || true
+  kpartx -d "$LOOP_DST" 2>/dev/null || true
+  losetup -d "$LOOP_DST" 2>/dev/null || true
+}
+trap cleanup EXIT
 
-    nix_build_retry() {
-      local max_attempts=5
-      local attempt=1
-      while true; do
-        if nix --max-jobs auto --cores 0 build "$@"; then
-          return 0
-        fi
-        if (( attempt >= max_attempts )); then
-          echo "ERROR: nix build failed after $attempt attempts." >&2
-          return 1
-        fi
-        echo "==> Build hit temporary glitch/network reset. Retrying ($attempt/$max_attempts) in $((attempt * 5))s..."
-        sleep $((attempt * 5))
-        attempt=$((attempt + 1))
-      done
-    }
+sleep 2
 
-    for pkg in nixpkgs#zstd.bin nixpkgs#zstd nixpkgs#util-linux nixpkgs#f2fs-tools; do
-      while IFS= read -r p; do
-        [ -n "$p" ] && export PATH="$p/bin:$p/sbin:$PATH"
-      done < <(nix_build_retry --no-link --print-out-paths "$pkg")
-    done
+echo "==> Formatting new partitions..."
+mkfs.vfat -F 32 -n BOOT "${MAP_DST}p1"
+mkfs.ext4 -F -L PERSIST "${MAP_DST}p2"
+mkfs.btrfs -f -L ROOTFS "${MAP_DST}p3"
 
-    package_image() {
-      local t="$1"
-      echo "==> Packaging $t"
-      local image
-      image="$(readlink -f "result/${t}/sd-image"/*.img* | head -n 1)"
-      local tmp
-      tmp="$(mktemp -d)"
-      trap '\''rm -rf "${tmp:-}"'\'' EXIT
+echo "==> Copying Boot partition..."
+mkdir -p /mnt/src_boot /mnt/dst_boot
+mount "${MAP_SRC}p1" /mnt/src_boot
+mount "${MAP_DST}p1" /mnt/dst_boot
+rsync -a /mnt/src_boot/ /mnt/dst_boot/
 
-      if [[ "$image" == *.zst ]]; then
-        zstd -d --stdout "$image" > "$tmp/image.img"
-      else
-        cp --reflink=auto "$image" "$tmp/image.img"
-      fi
+# Load configs
+. ./config.env
+. ./secrets.env
 
-      eval "$(partx "$tmp/image.img" -o START,SECTORS --nr 3 --pairs)"
-      [[ -n "${START:-}" && -n "${SECTORS:-}" ]] || { echo "image has no PERSIST partition" >&2; exit 1; }
-      dd if="$tmp/image.img" of="$tmp/persist.img" bs=512 skip="$START" count="$SECTORS" status=none
+echo "==> Generating cloud-init user-data and meta-data..."
+ADMIN_USER="${ADMIN_USERNAME:-admin}"
+ADMIN_HASH="${ADMIN_PAM_PASSWORD_HASH#\'}"
+ADMIN_HASH="${ADMIN_HASH%\'}"
 
-      mkdir -p "$tmp/persist-tree/state"
-      cp /run/app-config/config.env "$tmp/persist-tree/state/config.env"
-      cp /run/app-config/secrets.env "$tmp/persist-tree/state/secrets.env"
-      chmod 0600 "$tmp/persist-tree/state/config.env" "$tmp/persist-tree/state/secrets.env"
+cat > /mnt/dst_boot/user-data << EOF_USERDATA
+#cloud-config
+hostname: ${HOSTNAME:-rpi-appliance}
+manage_etc_hosts: true
 
-      sload.f2fs -f "$tmp/persist-tree" "$tmp/persist.img"
-      dd conv=notrunc if="$tmp/persist.img" of="$tmp/image.img" bs=512 seek="$START" count="$SECTORS" status=none
-      zstd -f -T0 "-${ZSTD_LEVEL}" "$tmp/image.img" -o "result/${t}.img.zst"
-      rm -rf "$tmp"
-      trap - EXIT
-      echo "==> result/${t}.img.zst"
-    }
+users:
+  - name: ${ADMIN_USER}
+    gecos: Appliance Administrator
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    shell: /bin/bash
+    lock_passwd: false
+    passwd: "${ADMIN_HASH}"
+    ssh_authorized_keys:
+      - "${ADMIN_SSH_PUBLIC_KEY}"
 
-    build_one() {
-      local t="$1"
-      echo "==> Building $t"
-      nix_build_retry ".#nixosConfigurations.${t}.config.system.build.sdImage" --out-link "result/${t}"
-      package_image "$t"
-    }
+EOF_USERDATA
 
-    case "$TARGET" in
-      rpi4) build_one rpi4 ;;
-      rpi0w) build_one rpi0w ;;
-      all)
-        echo "==> Building all targets in parallel"
-        nix_build_retry \
-          ".#nixosConfigurations.rpi4.config.system.build.sdImage" --out-link "result/rpi4" \
-          ".#nixosConfigurations.rpi0w.config.system.build.sdImage" --out-link "result/rpi0w"
-        package_image rpi4
-        package_image rpi0w
-        ;;
-    esac
+cat > /mnt/dst_boot/meta-data << EOF_METADATA
+instance-id: rpi-nas-appliance-01
+local-hostname: ${HOSTNAME:-rpi-appliance}
+EOF_METADATA
 
-    # Ensure generated files have matching host ownership
-    chown -R "$HOST_UID:$HOST_GID" /app/result /app/.cache 2>/dev/null || true
-  '
+# Copy config and secrets to boot partition for runtime access
+cp config.env /mnt/dst_boot/config.env
+cp secrets.env /mnt/dst_boot/secrets.env
+touch /mnt/dst_boot/ssh
+
+# Write wpa_supplicant.conf to boot partition for early Wi-Fi setup & country regulation
+cat > /mnt/dst_boot/wpa_supplicant.conf << EOF_BOOT_WPA
+ctrl_interface=DIR=/var/run/wpa_supplicant GROUP=netdev
+update_config=1
+country=${WIFI_COUNTRY:-US}
+EOF_BOOT_WPA
+
+# Configure cmdline.txt for native initramfs overlayfs read-only root protection
+sed -i "s|root=PARTUUID=[a-z0-9-]*|root=/dev/mmcblk0p3|" /mnt/dst_boot/cmdline.txt
+sed -i "s/rootfstype=ext4/rootfstype=btrfs rootflags=subvol=@,compress=zstd:3 overlayroot=tmpfs ds=nocloud;s=\/boot\/firmware\//" /mnt/dst_boot/cmdline.txt
+
+umount /mnt/src_boot /mnt/dst_boot
+
+echo "==> Copying Root partition with transparent zstd compression..."
+mkdir -p /mnt/src_root /mnt/dst_root
+mount "${MAP_SRC}p2" /mnt/src_root
+mount "${MAP_DST}p3" /mnt/dst_root -o compress=zstd:3
+
+btrfs subvolume create /mnt/dst_root/@
+btrfs subvolume create /mnt/dst_root/@rollback
+
+echo "==> Rsyncing rootfs..."
+rsync -a /mnt/src_root/ /mnt/dst_root/@/
+umount /mnt/src_root
+
+echo "==> Chrooting to configure appliance..."
+mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
+update-binfmts --enable qemu-aarch64 || true
+
+mount "${MAP_DST}p1" /mnt/dst_root/@/boot/firmware
+mount -t proc /proc /mnt/dst_root/@/proc
+mount -t sysfs /sys /mnt/dst_root/@/sys
+mount -t devtmpfs devtmpfs /mnt/dst_root/@/dev
+mount -t devpts devpts /mnt/dst_root/@/dev/pts
+
+mkdir -p /mnt/dst_root/@/persist /mnt/dst_root/@/home
+
+# Configure /etc/fstab with btrfs root, boot, and persist partitions
+cat > /mnt/dst_root/@/etc/fstab << EOF_FSTAB
+/dev/mmcblk0p3 / btrfs defaults,compress=zstd:3,subvol=@ 0 0
+/dev/mmcblk0p1 /boot/firmware vfat defaults,ro 0 2
+/dev/mmcblk0p2 /persist ext4 defaults,noatime 0 2
+EOF_FSTAB
+
+# Configure cloud-init NoCloud datasource
+mkdir -p /mnt/dst_root/@/etc/cloud/cloud.cfg.d
+cat > /mnt/dst_root/@/etc/cloud/cloud.cfg.d/99_nocloud.cfg << EOF_CLOUD
+datasource_list: [ NoCloud, None ]
+datasource:
+  NoCloud:
+    fs_label: BOOT
+EOF_CLOUD
+
+# Copy overlay directory into rootfs
+cp -a overlay/* /mnt/dst_root/@/
+chmod +x /mnt/dst_root/@/opt/appliance/bin/*.sh
+
+cat << 'EOF_CHROOT' > /mnt/dst_root/@/setup-chroot.sh
+#!/bin/bash
+set -euo pipefail
+export DEBIAN_FRONTEND=noninteractive
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+mkdir -p /etc/initramfs-tools/scripts
+if [ -f /etc/initramfs-tools/initramfs.conf ]; then
+  sed -i 's/MODULES=dep/MODULES=most/' /etc/initramfs-tools/initramfs.conf
+else
+  echo "MODULES=most" > /etc/initramfs-tools/initramfs.conf
+fi
+echo "btrfs" >> /etc/initramfs-tools/modules
+echo "overlay" >> /etc/initramfs-tools/modules
+
+apt-get update
+apt-get install -y overlayroot cloud-init initramfs-tools btrfs-progs lighttpd lighttpd-mod-webdav lighttpd-mod-openssl rfkill iw wireless-regdb curl iptables wpasupplicant iproute2 apache2-utils jq openssh-server
+
+echo 'overlayroot="tmpfs:swap=0"' > /etc/overlayroot.conf
+
+echo "==> Pre-generating SSH host keys..."
+ssh-keygen -A 2>/dev/null || true
+
+update-initramfs -u -k all || true
+
+echo "auto_initramfs=1" >> /boot/firmware/config.txt
+
+curl -fsSL https://tailscale.com/install.sh | sh
+
+curl -fsSL "https://github.com/go-acme/lego/releases/download/v4.17.4/lego_v4.17.4_linux_arm64.tar.gz" -o lego.tar.gz
+tar -xzf lego.tar.gz lego
+mv lego /usr/local/bin/lego
+rm lego.tar.gz
+
+systemctl enable ssh.service 2>/dev/null || true
+systemctl enable appliance-bootstrap.service data-mount.service appliance-wifi.service
+systemctl enable acme-runtime.timer cloudflare-ddns.timer
+systemctl enable tailscale-init.service tailscale-funnel.service
+systemctl enable lighttpd.service
+systemctl enable appliance-health.service appliance-rollback.service
+
+# Disable and mask conflicting/unneeded services for headless appliance
+systemctl disable resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-networkd-wait-online 2>/dev/null || true
+systemctl mask resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-remount-fs.service systemd-growfs-root.service sshswitch.service systemd-networkd-wait-online.service 2>/dev/null || true
+
+echo "==> Stripping unneeded packages and bloat (headless NAS optimization)..."
+apt-get purge -y --auto-remove \
+  gcc* g++* cpp* make build-essential gdb dpkg-dev \
+  linux-headers-* \
+  firmware-atheros firmware-realtek firmware-libertas \
+  mkvtoolnix triggerhappy modemmanager iso-codes man-db manpages doc-debian xauth \
+  libx11* libxext* libxmuu* libxpm* libxau* libxcb* libxdmcp* \
+  alsa-utils alsa-topology-conf alsa-ucm-conf \
+  v4l-utils librpicam-app* rpicam-apps* 2>/dev/null || true
+
+apt-get autoremove --purge -y
+
+echo "==> Cleaning apt caches and temporary files..."
+apt-get clean
+rm -rf /var/lib/apt/lists/* /var/cache/apt/archives/* /var/cache/debconf/*-old /tmp/* /var/tmp/* /usr/share/man/* /usr/share/doc/* /usr/share/info/*
+EOF_CHROOT
+chmod +x /mnt/dst_root/@/setup-chroot.sh
+
+chroot /mnt/dst_root/@ /setup-chroot.sh
+
+rm -f /mnt/dst_root/@/setup-chroot.sh
+
+echo "==> Cleaning up mounts and syncing..."
+umount /mnt/dst_root/@/dev/pts
+umount /mnt/dst_root/@/dev
+umount /mnt/dst_root/@/sys
+umount /mnt/dst_root/@/proc
+umount /mnt/dst_root/@/boot/firmware
+
+sync
+umount /mnt/dst_root
+
+trap - EXIT
+cleanup
+
+echo "==> Compressing image with zstd (ultra)..."
+zstd -f -T0 -19 result/rpi4.img -o result/rpi4.img.zst
+rm result/rpi4.img
+
+echo "==> Done. Minimal image is at result/rpi4.img.zst"
+EOF_DOCKER
