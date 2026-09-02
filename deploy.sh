@@ -2,18 +2,25 @@
 set -euo pipefail
 
 if [[ $# -lt 1 ]]; then
-  echo "Usage: $0 <target-ip-or-tailscale-name>"
+  echo "Usage: $0 <target-ip-or-tailscale-name> [rpi4|rpi0w]"
   exit 1
 fi
 
 TARGET="$1"
-IMG="result/rpi4.img.zst"
+DEVICE="${2:-rpi4}"
+IMG="result/${DEVICE}.img.zst"
 
 if [[ ! -f "$IMG" ]]; then
-  if [[ -f "result/rpi4.img" ]]; then
-    IMG="result/rpi4.img"
+  if [[ -f "result/${DEVICE}.img" ]]; then
+    IMG="result/${DEVICE}.img"
+  elif [[ -f "result/rpi4.img.zst" ]]; then
+    IMG="result/rpi4.img.zst"
+    DEVICE="rpi4"
+  elif [[ -f "result/rpi0w.img.zst" ]]; then
+    IMG="result/rpi0w.img.zst"
+    DEVICE="rpi0w"
   else
-    echo "Error: image not found in result/. Run ./build.sh first."
+    echo "Error: image not found in result/. Run ./build.sh ${DEVICE} first."
     exit 1
   fi
 fi
@@ -23,9 +30,10 @@ if [[ -f config.env ]]; then
 fi
 SSH_USER="${ADMIN_USERNAME:-yeicor}"
 
-echo "==> Deploying to $TARGET as $SSH_USER via Docker..."
+echo "==> Deploying [${DEVICE}] image to $TARGET as $SSH_USER via Docker..."
 
 docker run --rm --privileged --net=host \
+  -e DEVICE="$DEVICE" \
   -v "$HOME/.ssh:/root/.ssh:ro" \
   -v "$(pwd):/work" \
   debian:bookworm bash -c "
@@ -36,10 +44,10 @@ docker run --rm --privileged --net=host \
     apt-get update -qq
     apt-get install -y -qq btrfs-progs kpartx openssh-client rsync zstd >/dev/null
 
-    IMG_RAW=\"result/rpi4.img\"
-    if [[ -f \"result/rpi4.img.zst\" ]]; then
+    IMG_RAW=\"result/\${DEVICE}.img\"
+    if [[ -f \"result/\${DEVICE}.img.zst\" ]]; then
       echo \"==> Decompressing image for delta extraction...\"
-      zstd -d -f result/rpi4.img.zst -o \"\$IMG_RAW\"
+      zstd -d -f result/\${DEVICE}.img.zst -o \"\$IMG_RAW\"
     fi
 
     echo \"==> Mounting image inside container...\"

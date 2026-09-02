@@ -2,7 +2,9 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-echo "=== Starting E2E Appliance Build & Verification Test ==="
+DEVICE="${1:-rpi4}"
+
+echo "=== Starting E2E Appliance Build & Verification Test for [${DEVICE}] ==="
 
 TEST_DIR="$(mktemp -d /tmp/appliance-test-XXXXXX)"
 trap 'echo "==> Cleaning up test environment"; rm -rf "$TEST_DIR"' EXIT
@@ -33,19 +35,19 @@ WIFI_PASSWORD_1="CiPrimaryWifiPassword"
 WIFI_PASSWORD_2="CiSecondaryWifiPassword"
 EOF
 
-echo "==> Building appliance image..."
-CONFIG_ENV="$TEST_DIR/config.env" SECRETS_ENV="$TEST_DIR/secrets.env" ./build.sh
+echo "==> Building appliance image for ${DEVICE}..."
+CONFIG_ENV="$TEST_DIR/config.env" SECRETS_ENV="$TEST_DIR/secrets.env" ./build.sh "${DEVICE}"
 
 echo "==> Verifying output artifact..."
-if [[ ! -f "result/rpi4.img.zst" ]]; then
-  echo "Error: result/rpi4.img.zst not found!"
+if [[ ! -f "result/${DEVICE}.img.zst" ]]; then
+  echo "Error: result/${DEVICE}.img.zst not found!"
   exit 1
 fi
 
 echo "==> Decompressing image to verify partition structure..."
-zstd -d -f result/rpi4.img.zst -o "$TEST_DIR/rpi4.img"
+zstd -d -f "result/${DEVICE}.img.zst" -o "$TEST_DIR/${DEVICE}.img"
 
 echo "==> Inspecting partitions with parted in Docker..."
-docker run --rm -v "$TEST_DIR:/work" debian:bookworm bash -c 'apt-get update -qq && apt-get install -y -qq parted >/dev/null 2>&1 && parted -s /work/rpi4.img print'
+docker run --rm -v "$TEST_DIR:/work" debian:bookworm bash -c "apt-get update -qq && apt-get install -y -qq parted >/dev/null 2>&1 && parted -s /work/${DEVICE}.img print"
 
-echo "=== E2E Build & Verification Test Passed Successfully! ==="
+echo "=== E2E Build & Verification Test for [${DEVICE}] Passed Successfully! ==="

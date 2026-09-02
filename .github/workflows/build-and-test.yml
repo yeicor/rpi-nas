@@ -16,9 +16,13 @@ permissions:
 
 jobs:
   build-and-test:
-    name: Build & Verify Image (Raspberry Pi 4)
+    name: Build & Verify Image (${{ matrix.device }})
     runs-on: ubuntu-24.04
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [rpi4, rpi0w]
 
     steps:
       - name: Checkout repository
@@ -33,17 +37,18 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .cache
-          key: rpi-base-image-${{ hashFiles('build.sh') }}
+          key: rpi-base-image-${{ matrix.device }}-${{ hashFiles('build.sh') }}
           restore-keys: |
+            rpi-base-image-${{ matrix.device }}-
             rpi-base-image-
 
       - name: Run E2E Test Suite
-        run: ./test/e2e-test.sh
+        run: ./test/e2e-test.sh ${{ matrix.device }}
 
       - name: Upload Deployable SD Card Image
         uses: actions/upload-artifact@v4
         with:
-          name: rpi4-sd-image
-          path: result/rpi4.img.zst
+          name: ${{ matrix.device }}-sd-image
+          path: result/${{ matrix.device }}.img.zst
           if-no-files-found: error
           retention-days: 14

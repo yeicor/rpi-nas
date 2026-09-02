@@ -2,6 +2,7 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+DEVICE="${1:-rpi4}"
 CONFIG_ENV="${CONFIG_ENV:-config.env}"
 SECRETS_ENV="${SECRETS_ENV:-secrets.env}"
 
@@ -10,8 +11,9 @@ command -v docker >/dev/null 2>&1 || { echo "Error: docker is required."; exit 1
 
 mkdir -p .cache result
 
-echo "==> Building Raspberry Pi OS Trixie Appliance image in Docker..."
+echo "==> Building Raspberry Pi OS Trixie Appliance image for [${DEVICE}] in Docker..."
 docker run --rm -i --privileged \
+  -e DEVICE="$DEVICE" \
   -v "$(pwd):/app" \
   -w /app \
   debian:bookworm bash << 'EOF_DOCKER'
@@ -24,29 +26,41 @@ mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
 apt-get update -qq
 apt-get install -y -qq wget xz-utils parted util-linux kpartx e2fsprogs btrfs-progs dosfstools qemu-user-static binfmt-support rsync curl zstd
 
-IMG_DATE="2026-06-19"
-IMG_NAME="2026-06-18-raspios-trixie-arm64-lite"
-IMG_URL="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-${IMG_DATE}/${IMG_NAME}.img.xz"
+if [[ "$DEVICE" == "rpi0w" || "$DEVICE" == "rpi0" ]]; then
+  TARGET_DEVICE="rpi0w"
+  IMG_DATE="2026-06-19"
+  IMG_NAME="2026-06-18-raspios-trixie-armhf-lite"
+  IMG_URL="https://downloads.raspberrypi.com/raspios_lite_armhf/images/raspios_lite_armhf-${IMG_DATE}/${IMG_NAME}.img.xz"
+  LEGO_ARCH="armv6"
+  QEMU_ARCH="qemu-arm"
+else
+  TARGET_DEVICE="rpi4"
+  IMG_DATE="2026-06-19"
+  IMG_NAME="2026-06-18-raspios-trixie-arm64-lite"
+  IMG_URL="https://downloads.raspberrypi.com/raspios_lite_arm64/images/raspios_lite_arm64-${IMG_DATE}/${IMG_NAME}.img.xz"
+  LEGO_ARCH="arm64"
+  QEMU_ARCH="qemu-aarch64"
+fi
 
 if [ ! -f ".cache/${IMG_NAME}.img" ]; then
-  echo "==> Downloading official Raspberry Pi OS Trixie Lite image..."
+  echo "==> Downloading official Raspberry Pi OS Trixie Lite image for ${TARGET_DEVICE}..."
   wget -q --show-progress -O ".cache/${IMG_NAME}.img.xz" "$IMG_URL"
   echo "==> Decompressing base image..."
   xz -d -T0 ".cache/${IMG_NAME}.img.xz"
 fi
 
-echo "==> Preparing working image (3GB with Btrfs compression)..."
-rm -f result/rpi4.img result/rpi4.img.zst
-truncate -s 3G result/rpi4.img
+echo "==> Preparing working image for ${TARGET_DEVICE} (3GB with Btrfs compression)..."
+rm -f "result/${TARGET_DEVICE}.img" "result/${TARGET_DEVICE}.img.zst"
+truncate -s 3G "result/${TARGET_DEVICE}.img"
 
 echo "==> Partitioning image..."
-parted -s result/rpi4.img mklabel msdos
+parted -s "result/${TARGET_DEVICE}.img" mklabel msdos
 # Partition 1: BOOT (FAT32) 512MB
-parted -s result/rpi4.img mkpart primary fat32 4MiB 516MiB
+parted -s "result/${TARGET_DEVICE}.img" mkpart primary fat32 4MiB 516MiB
 # Partition 2: PERSIST (Ext4) 512MB
-parted -s result/rpi4.img mkpart primary ext4 516MiB 1028MiB
+parted -s "result/${TARGET_DEVICE}.img" mkpart primary ext4 516MiB 1028MiB
 # Partition 3: ROOT (Btrfs) rest of image
-parted -s result/rpi4.img mkpart primary btrfs 1028MiB 100%
+parted -s "result/${TARGET_DEVICE}.img" mkpart primary btrfs 1028MiB 100%
 
 # Create loop devices if missing in docker container
 mknod /dev/loop-control c 10 237 2>/dev/null || true
@@ -58,7 +72,7 @@ kpartx -a "$LOOP_SRC"
 MAP_SRC="/dev/mapper/$(basename $LOOP_SRC)"
 
 # Mount new image
-LOOP_DST=$(losetup -f --show result/rpi4.img)
+LOOP_DST=$(losetup -f --show "result/${TARGET_DEVICE}.img")
 kpartx -a "$LOOP_DST"
 MAP_DST="/dev/mapper/$(basename $LOOP_DST)"
 
@@ -82,11 +96,12 @@ echo "==> Copying Boot partition..."
 mkdir -p /mnt/src_boot /mnt/dst_boot
 mount "${MAP_SRC}p1" /mnt/src_boot
 mount "${MAP_DST}p1" /mnt/dst_boot
+
 rsync -a /mnt/src_boot/ /mnt/dst_boot/
 
-# Load configs
-. ./config.env
-. ./secrets.env
+# Source configuration
+. config.env
+. secrets.env
 
 echo "==> Generating cloud-init user-data and meta-data..."
 ADMIN_USER="${ADMIN_USERNAME:-admin}"
@@ -147,7 +162,9 @@ umount /mnt/src_root
 
 echo "==> Chrooting to configure appliance..."
 mount binfmt_misc -t binfmt_misc /proc/sys/fs/binfmt_misc 2>/dev/null || true
-update-binfmts --enable qemu-aarch64 || true
+update-binfmts --enable "$QEMU_ARCH" || true
+cp -f /usr/bin/qemu-aarch64-static /mnt/dst_root/@/usr/bin/ 2>/dev/null || true
+cp -f /usr/bin/qemu-arm-static /mnt/dst_root/@/usr/bin/ 2>/dev/null || true
 
 mount "${MAP_DST}p1" /mnt/dst_root/@/boot/firmware
 mount -t proc /proc /mnt/dst_root/@/proc
@@ -177,7 +194,7 @@ EOF_CLOUD
 cp -a overlay/* /mnt/dst_root/@/
 chmod +x /mnt/dst_root/@/opt/appliance/bin/*.sh
 
-cat << 'EOF_CHROOT' > /mnt/dst_root/@/setup-chroot.sh
+cat << EOF_CHROOT > /mnt/dst_root/@/setup-chroot.sh
 #!/bin/bash
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -206,7 +223,7 @@ echo "auto_initramfs=1" >> /boot/firmware/config.txt
 
 curl -fsSL https://tailscale.com/install.sh | sh
 
-curl -fsSL "https://github.com/go-acme/lego/releases/download/v4.17.4/lego_v4.17.4_linux_arm64.tar.gz" -o lego.tar.gz
+curl -fsSL "https://github.com/go-acme/lego/releases/download/v4.17.4/lego_v4.17.4_linux_${LEGO_ARCH}.tar.gz" -o lego.tar.gz
 tar -xzf lego.tar.gz lego
 mv lego /usr/local/bin/lego
 rm lego.tar.gz
@@ -242,7 +259,7 @@ chmod +x /mnt/dst_root/@/setup-chroot.sh
 
 chroot /mnt/dst_root/@ /setup-chroot.sh
 
-rm -f /mnt/dst_root/@/setup-chroot.sh
+rm -f /mnt/dst_root/@/setup-chroot.sh /mnt/dst_root/@/usr/bin/qemu-*-static
 
 echo "==> Cleaning up mounts and syncing..."
 umount /mnt/dst_root/@/dev/pts
@@ -258,8 +275,8 @@ trap - EXIT
 cleanup
 
 echo "==> Compressing image with zstd (ultra)..."
-zstd -f -T0 -19 result/rpi4.img -o result/rpi4.img.zst
-rm result/rpi4.img
+zstd -f -T0 -19 "result/${TARGET_DEVICE}.img" -o "result/${TARGET_DEVICE}.img.zst"
+rm "result/${TARGET_DEVICE}.img"
 
-echo "==> Done. Minimal image is at result/rpi4.img.zst"
+echo "==> Done. Minimal image is at result/${TARGET_DEVICE}.img.zst"
 EOF_DOCKER
