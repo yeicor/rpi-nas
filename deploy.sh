@@ -57,6 +57,7 @@ docker run --rm --privileged --net=host \
 
     cleanup() {
       echo \"==> Cleaning up container loop mounts...\"
+      umount /mnt/local-boot 2>/dev/null || true
       umount /mnt/local-root 2>/dev/null || true
       kpartx -d \"\$LOOP_DEV\" 2>/dev/null || true
       losetup -d \"\$LOOP_DEV\" 2>/dev/null || true
@@ -64,8 +65,9 @@ docker run --rm --privileged --net=host \
     }
     trap cleanup EXIT
 
-    mkdir -p /mnt/local-root
+    mkdir -p /mnt/local-root /mnt/local-boot
     mount \"\${MAPPER}p3\" /mnt/local-root -o subvol=@
+    mount \"\${MAPPER}p1\" /mnt/local-boot
 
     SSH_OPTS=\"-o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR\"
 
@@ -87,16 +89,24 @@ docker run --rm --privileged --net=host \
     set +e
     rsync -avzx --delete --numeric-ids --rsync-path=\"sudo rsync\" \
       -e \"ssh \$SSH_OPTS\" /mnt/local-root/ \"$SSH_USER@$TARGET:/mnt/btrfs-root/@testing/\"
-    RSYNC_EXIT=$?
+    RSYNC_EXIT=\$?
     set -e
-    if [[ $RSYNC_EXIT -ne 0 && $RSYNC_EXIT -ne 23 && $RSYNC_EXIT -ne 24 ]]; then
-      echo \"==> [ERROR] rsync failed with exit code $RSYNC_EXIT\"
-      exit $RSYNC_EXIT
-    elif [[ $RSYNC_EXIT -eq 23 || $RSYNC_EXIT -eq 24 ]]; then
-      echo \"==> [WARN] rsync completed with partial transfer (exit code $RSYNC_EXIT), continuing...\"
+    if [[ \$RSYNC_EXIT -ne 0 && \$RSYNC_EXIT -ne 23 && \$RSYNC_EXIT -ne 24 ]]; then
+      echo \"==> [ERROR] rsync failed with exit code \$RSYNC_EXIT\"
+      exit \$RSYNC_EXIT
+    elif [[ \$RSYNC_EXIT -eq 23 || \$RSYNC_EXIT -eq 24 ]]; then
+      echo \"==> [WARN] rsync completed with partial transfer (exit code \$RSYNC_EXIT), continuing...\"
     else
       echo \"==> rsync completed successfully\"
     fi
+
+    # Push updated boot-partition configuration (cmdline.txt/config.env/secrets.env)
+    # so kernel cmdline, HOSTNAME and other runtime config changes take effect on
+    # next boot. cmdline.txt must be pushed or overlayroot/fstab hardening is lost.
+    echo \"==> Staging updated boot configuration on target...\"
+    scp \$SSH_OPTS /mnt/local-boot/cmdline.txt \"$SSH_USER@$TARGET:/var/tmp/deploy-cmdline.txt\" 2>/dev/null || echo \"   [WARN] no cmdline.txt in image; skipping\"
+    scp \$SSH_OPTS /mnt/local-boot/config.env \"$SSH_USER@$TARGET:/var/tmp/deploy-config.env\" 2>/dev/null || echo \"   [WARN] no config.env in image; skipping\"
+    scp \$SSH_OPTS /mnt/local-boot/secrets.env \"$SSH_USER@$TARGET:/var/tmp/deploy-secrets.env\" 2>/dev/null || echo \"   [WARN] no secrets.env in image; skipping\"
 
     echo \"==> Atomically swapping subvolumes and setting test boot status...\"
     ssh \$SSH_OPTS \"$SSH_USER@$TARGET\" \"sudo bash -c '
@@ -109,6 +119,11 @@ docker run --rm --privileged --net=host \
       
       mount -o remount,rw /boot/firmware
       echo \\\"boot_status=testing\\\" > /boot/firmware/status.txt
+      cp -f /var/tmp/deploy-cmdline.txt /boot/firmware/cmdline.txt 2>/dev/null || true
+      cp -f /var/tmp/deploy-config.env /boot/firmware/config.env 2>/dev/null || true
+      cp -f /var/tmp/deploy-secrets.env /boot/firmware/secrets.env 2>/dev/null || true
+      rm -f /var/tmp/deploy-cmdline.txt /var/tmp/deploy-config.env /var/tmp/deploy-secrets.env
+      sync
       mount -o remount,ro /boot/firmware
       
       umount /mnt/btrfs-root 2>/dev/null || true
@@ -118,7 +133,7 @@ docker run --rm --privileged --net=host \
     '\"
 
     echo \"==> Staged upgrade reboot triggered!\"
-    echo \"==> Waiting for device to reboot and reconnect (polling up to 300s)...\"
+    echo \"==> Waiting for device to reboot and reconnect (polling up to 600s)...\"
     sleep 12
 
     start_time=\$(date +%s)
@@ -126,8 +141,8 @@ docker run --rm --privileged --net=host \
     while true; do
       current_time=\$(date +%s)
       elapsed=\$(( current_time - start_time ))
-      if [[ \$elapsed -gt 300 ]]; then
-        echo \"==> [ERROR] Timed out waiting for device to reconnect after 300s!\"
+      if [[ \$elapsed -gt 600 ]]; then
+        echo \"==> [ERROR] Timed out waiting for device to reconnect after 600s!\"
         exit 1
       fi
 

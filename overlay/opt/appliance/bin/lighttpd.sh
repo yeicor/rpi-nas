@@ -19,14 +19,6 @@ fi
 chown "$user:www-data" "$root" 2>/dev/null || true
 chmod 0775 "$root" 2>/dev/null || true
 
-# Ensure htpasswd exists
-mkdir -p /persist/auth
-if [[ ! -s /persist/auth/htpasswd ]]; then
-  touch /persist/auth/htpasswd
-  chmod 0600 /persist/auth/htpasswd
-  chown www-data:www-data /persist/auth/htpasswd
-fi
-
 # If Let's Encrypt certificate is not yet generated, create temporary self-signed cert
 ssl_cert="$cert/fullchain.pem"
 ssl_key="$cert/key.pem"
@@ -54,7 +46,7 @@ server.groupname = "www-data"
 server.modules = (
   "mod_access",
   "mod_auth",
-  "mod_authn_file",
+  "mod_authn_pam",
   "mod_webdav",
   "mod_openssl",
   "mod_dirlisting"
@@ -67,8 +59,7 @@ webdav.activate = "enable"
 webdav.is-readonly = "disable"
 webdav.sqlite-db-name = "$run/webdav.db"
 
-auth.backend = "htpasswd"
-auth.backend.htpasswd.userfile = "/persist/auth/htpasswd"
+auth.backend = "pam"
 auth.require = (
   "/" => (
     "method" => "basic",

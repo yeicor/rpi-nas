@@ -148,7 +148,7 @@ EOF_BOOT_WPA
 
 # Configure cmdline.txt for native initramfs overlayfs read-only root protection and regulatory domain
 sed -i "s|root=PARTUUID=[a-z0-9-]*|root=/dev/mmcblk0p3|" /mnt/dst_boot/cmdline.txt
-sed -i "s/rootfstype=ext4/rootfstype=btrfs rootflags=subvol=@,compress=zstd:3 overlayroot=tmpfs ds=nocloud;s=\/boot\/firmware\//" /mnt/dst_boot/cmdline.txt
+sed -i "s/rootfstype=ext4/rootfstype=btrfs rootflags=subvol=@,compress=zstd:3 overlayroot=tmpfs:swap=0,recurse=0 ds=nocloud;s=\/boot\/firmware\//" /mnt/dst_boot/cmdline.txt
 sed -i "s/\$/ cfg80211.ieee80211_regdom=${WIFI_COUNTRY:-US} rfkill.default_state=1/" /mnt/dst_boot/cmdline.txt
 
 umount /mnt/src_boot /mnt/dst_boot
@@ -182,8 +182,8 @@ mkdir -p /mnt/dst_root/@/persist /mnt/dst_root/@/home
 # Configure /etc/fstab with btrfs root, boot, and persist partitions
 cat > /mnt/dst_root/@/etc/fstab << EOF_FSTAB
 /dev/mmcblk0p3 / btrfs defaults,compress=zstd:3,subvol=@ 0 0
-/dev/mmcblk0p1 /boot/firmware vfat defaults,ro 0 2
-/dev/mmcblk0p2 /persist ext4 defaults,noatime 0 2
+/dev/mmcblk0p1 /boot/firmware vfat defaults,ro,nofail,x-systemd.device-timeout=10 0 0
+/dev/mmcblk0p2 /persist ext4 defaults,noatime,nofail,x-systemd.device-timeout=10 0 0
 EOF_FSTAB
 
 # Configure cloud-init NoCloud datasource
@@ -270,7 +270,7 @@ echo "btrfs" >> /etc/initramfs-tools/modules
 echo "overlay" >> /etc/initramfs-tools/modules
 
 apt-get update
-apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" overlayroot cloud-init initramfs-tools btrfs-progs lighttpd lighttpd-mod-webdav lighttpd-mod-openssl rfkill iw wireless-regdb hdparm hd-idle sdparm curl iptables wpasupplicant iproute2 apache2-utils jq openssh-server
+apt-get install -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" overlayroot cloud-init initramfs-tools btrfs-progs lighttpd lighttpd-mod-webdav lighttpd-mod-openssl lighttpd-mod-authn-pam rfkill iw wireless-regdb hdparm hd-idle sdparm curl iptables wpasupplicant iproute2 apache2-utils jq openssh-server
 
 echo 'overlayroot="tmpfs:swap=0,recurse=0"' > /etc/overlayroot.conf
 
@@ -295,6 +295,9 @@ systemctl enable acme-runtime.timer cloudflare-ddns.timer
 systemctl enable tailscale-init.service tailscale-funnel.service
 systemctl enable lighttpd.service
 systemctl enable appliance-health.service appliance-rollback.service
+
+# Allow lighttpd (www-data) to use PAM auth by reading /etc/shadow
+usermod -aG shadow www-data 2>/dev/null || true
 
 # Disable and mask conflicting/unneeded services for headless appliance
 # Mask apt-listchanges, apt-daily, man-db, and other timers that slow down remote upgrades

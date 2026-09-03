@@ -1,0 +1,4 @@
+# PAM configuration for lighttpd WebDAV authentication
+# Uses standard Unix password authentication via /etc/shadow
+auth    required    pam_unix.so
+account required    pam_unix.so
