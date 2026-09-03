@@ -14,7 +14,11 @@ mkdir -p .cache result
 echo "==> Building Raspberry Pi OS Trixie Appliance image for [${DEVICE}] in Docker..."
 docker run --rm -i --privileged \
   -e DEVICE="$DEVICE" \
+  -e CONFIG_ENV="$CONFIG_ENV" \
+  -e SECRETS_ENV="$SECRETS_ENV" \
   -v "$(pwd):/app" \
+  -v "$(realpath "$CONFIG_ENV"):/run/build/config.env:ro" \
+  -v "$(realpath "$SECRETS_ENV"):/run/build/secrets.env:ro" \
   -w /app \
   debian:bookworm bash << 'EOF_DOCKER'
 set -euo pipefail
@@ -99,9 +103,9 @@ mount "${MAP_DST}p1" /mnt/dst_boot
 
 rsync -a /mnt/src_boot/ /mnt/dst_boot/
 
-# Source configuration
-. config.env
-. secrets.env
+# Source configuration (files are bind-mounted from CONFIG_ENV/SECRETS_ENV)
+. /run/build/config.env
+. /run/build/secrets.env
 
 echo "==> Generating cloud-init user-data and meta-data..."
 ADMIN_USER="${ADMIN_USERNAME:-admin}"
@@ -131,8 +135,8 @@ local-hostname: ${HOSTNAME:-rpi-appliance}
 EOF_METADATA
 
 # Copy config and secrets to boot partition for runtime access
-cp config.env /mnt/dst_boot/config.env
-cp secrets.env /mnt/dst_boot/secrets.env
+cp /run/build/config.env /mnt/dst_boot/config.env
+cp /run/build/secrets.env /mnt/dst_boot/secrets.env
 touch /mnt/dst_boot/ssh
 
 # Write wpa_supplicant.conf to boot partition for early Wi-Fi setup & country regulation
