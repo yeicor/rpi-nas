@@ -6,7 +6,11 @@ set -euo pipefail
 state=/persist/acme
 mkdir -p "$state/lego" "$state/$WEBDAV_DOMAIN"
 chmod 0700 "$state" "$state/lego" "$state/$WEBDAV_DOMAIN"
-export CLOUDFLARE_DNS_API_TOKEN
+
+# lego Cloudflare provider requires CLOUDFLARE_DNS_API_TOKEN and CLOUDFLARE_ZONE_API_TOKEN.
+# secrets.env exposes the token as CLOUDFLARE_API_TOKEN, so map it here.
+export CLOUDFLARE_DNS_API_TOKEN="${CLOUDFLARE_DNS_API_TOKEN:-${CLOUDFLARE_API_TOKEN}}"
+export CLOUDFLARE_ZONE_API_TOKEN="${CLOUDFLARE_ZONE_API_TOKEN:-${CLOUDFLARE_API_TOKEN}}"
 
 cert="$state/lego/certificates/${WEBDAV_DOMAIN}.crt"
 key="$state/lego/certificates/${WEBDAV_DOMAIN}.key"
