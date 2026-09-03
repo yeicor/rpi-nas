@@ -28,7 +28,8 @@ fi
 
 if $need_new_login && [ -n "$current_key" ] && [ "$current_key" != "REPLACE_ME" ]; then
   echo "tailscale-init: Authenticating node with auth key..."
-  tailscale up --auth-key="$current_key" --hostname="$HOSTNAME" --ssh --accept-dns=true --advertise-exit-node
+  timeout 30 tailscale up --auth-key="$current_key" --hostname="$HOSTNAME" --ssh --accept-dns=true --advertise-exit-node || \
+    echo "tailscale-init: Warning: tailscale up timed out (node may need admin approval at https://login.tailscale.com/admin)"
   printf '%s' "$current_key" > "$last_key_file"
 else
   echo "tailscale-init: Reusing persisted pre-authorized credentials from $state_file..."

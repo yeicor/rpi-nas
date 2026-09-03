@@ -43,9 +43,7 @@ if ! mountpoint -q "$mountpoint"; then
 fi
 
 if mountpoint -q "$mountpoint"; then
-  mkdir -p "$mountpoint/webdav"
-  chown -R "$user:www-data" "$mountpoint/webdav" 2>/dev/null || true
-  chmod -R 0775 "$mountpoint/webdav" 2>/dev/null || true
+  chown "$user:www-data" "$mountpoint" 2>/dev/null || true
   chmod 0775 "$mountpoint" 2>/dev/null || true
 fi
 

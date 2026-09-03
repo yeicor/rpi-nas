@@ -3,22 +3,21 @@ set -euo pipefail
 
 . /persist/config.env
 user="${ADMIN_USERNAME:-admin}"
-root=/run/webdav-data/webdav
+root=/run/webdav-data
 cert=/persist/acme/$WEBDAV_DOMAIN
 run=/run/lighttpd
 conf=$run/lighttpd.conf
 
 install -d -m 0755 -o www-data -g www-data "$run"
 
-# Ensure document root directory exists and is accessible by www-data
-if ! mkdir -p "$root" 2>/dev/null; then
+# Ensure document root exists and is accessible by www-data
+if ! mountpoint -q "$root" && [[ ! -d "$root" ]]; then
   echo "lighttpd: $root not available (data drive disconnected). Falling back to /var/www/html..."
   root=/var/www/html
   mkdir -p "$root"
 fi
-chown -R "$user:www-data" "$root" 2>/dev/null || true
-chmod -R 0775 "$root" 2>/dev/null || true
-chmod 0775 "/run/webdav-data" 2>/dev/null || true
+chown "$user:www-data" "$root" 2>/dev/null || true
+chmod 0775 "$root" 2>/dev/null || true
 
 # Ensure htpasswd exists
 mkdir -p /persist/auth
@@ -82,7 +81,7 @@ auth.require = (
   ssl.engine = "enable"
   ssl.pemfile = "$ssl_cert"
   ssl.privkey = "$ssl_key"
-  ssl.minimum-version = "TLSv1.2"
+  ssl.openssl.ssl-conf-cmd = ("MinProtocol" => "TLSv1.2")
 }
 EOF2
 

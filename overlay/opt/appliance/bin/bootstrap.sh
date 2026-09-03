@@ -25,10 +25,8 @@ hash="${hash%\'}"
 
 # Ensure user exists in /etc/passwd if cloud-init didn't add it
 if ! id "$user" >/dev/null 2>&1; then
-  mount -o remount,rw / || true
   useradd -m -s /bin/bash -p "$hash" "$user" 2>/dev/null || true
   usermod -aG sudo "$user" 2>/dev/null || true
-  mount -o remount,ro / || true
 fi
 
 # Generate htpasswd for WebDAV
