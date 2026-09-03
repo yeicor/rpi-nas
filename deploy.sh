@@ -36,7 +36,7 @@ docker run --rm --privileged --net=host \
   -e DEVICE="$DEVICE" \
   -v "$HOME/.ssh:/root/.ssh:ro" \
   -v "$(pwd):/work" \
-  debian:bookworm bash -c "
+  debian:trixie bash -c "
     set -euo pipefail
     cd /work
     
@@ -84,7 +84,19 @@ docker run --rm --privileged --net=host \
     '\"
 
     echo \"==> Pushing deltas via rsync...\"
-    rsync -avz --delete --numeric-ids --rsync-path=\"sudo rsync\" -e \"ssh \$SSH_OPTS\" /mnt/local-root/ \"$SSH_USER@$TARGET:/mnt/btrfs-root/@testing/\"
+    set +e
+    rsync -avzx --delete --numeric-ids --rsync-path=\"sudo rsync\" \
+      -e \"ssh \$SSH_OPTS\" /mnt/local-root/ \"$SSH_USER@$TARGET:/mnt/btrfs-root/@testing/\"
+    RSYNC_EXIT=$?
+    set -e
+    if [[ $RSYNC_EXIT -ne 0 && $RSYNC_EXIT -ne 23 && $RSYNC_EXIT -ne 24 ]]; then
+      echo \"==> [ERROR] rsync failed with exit code $RSYNC_EXIT\"
+      exit $RSYNC_EXIT
+    elif [[ $RSYNC_EXIT -eq 23 || $RSYNC_EXIT -eq 24 ]]; then
+      echo \"==> [WARN] rsync completed with partial transfer (exit code $RSYNC_EXIT), continuing...\"
+    else
+      echo \"==> rsync completed successfully\"
+    fi
 
     echo \"==> Atomically swapping subvolumes and setting test boot status...\"
     ssh \$SSH_OPTS \"$SSH_USER@$TARGET\" \"sudo bash -c '
@@ -106,7 +118,7 @@ docker run --rm --privileged --net=host \
     '\"
 
     echo \"==> Staged upgrade reboot triggered!\"
-    echo \"==> Waiting for device to reboot and reconnect (polling up to 120s)...\"
+    echo \"==> Waiting for device to reboot and reconnect (polling up to 300s)...\"
     sleep 12
 
     start_time=\$(date +%s)
@@ -114,8 +126,8 @@ docker run --rm --privileged --net=host \
     while true; do
       current_time=\$(date +%s)
       elapsed=\$(( current_time - start_time ))
-      if [[ \$elapsed -gt 180 ]]; then
-        echo \"==> [ERROR] Timed out waiting for device to reconnect after 180s!\"
+      if [[ \$elapsed -gt 300 ]]; then
+        echo \"==> [ERROR] Timed out waiting for device to reconnect after 300s!\"
         exit 1
       fi
 

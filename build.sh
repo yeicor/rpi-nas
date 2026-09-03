@@ -20,7 +20,7 @@ docker run --rm -i --privileged \
   -v "$(realpath "$CONFIG_ENV"):/run/build/config.env:ro" \
   -v "$(realpath "$SECRETS_ENV"):/run/build/secrets.env:ro" \
   -w /app \
-  debian:bookworm bash << 'EOF_DOCKER'
+  debian:trixie bash << 'EOF_DOCKER'
 set -euo pipefail
 
 export DEBIAN_FRONTEND=noninteractive
@@ -297,8 +297,11 @@ systemctl enable lighttpd.service
 systemctl enable appliance-health.service appliance-rollback.service
 
 # Disable and mask conflicting/unneeded services for headless appliance
+# Mask apt-listchanges, apt-daily, man-db, and other timers that slow down remote upgrades
 systemctl disable resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-networkd-wait-online 2>/dev/null || true
 systemctl mask resize2fs_once dphys-swapfile rpi-resize-swap-file userconfig userconf-pi systemd-remount-fs.service systemd-growfs-root.service sshswitch.service systemd-networkd-wait-online.service systemd-rfkill.service systemd-rfkill.socket regenerate_ssh_host_keys.service sshd-keygen.service 2>/dev/null || true
+systemctl mask apt-listchanges.service apt-daily.service apt-daily-upgrade.service man-db.service man-db.timer 2>/dev/null || true
+systemctl mask apt-daily.timer apt-daily-upgrade.timer 2>/dev/null || true
 
 echo "==> Stripping unneeded packages and bloat (headless NAS optimization)..."
 apt-get purge -y --auto-remove \
